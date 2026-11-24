@@ -92,6 +92,10 @@ jobs:
           cp README.md npm/README.md
           cp LICENSE npm/LICENSE
           chmod +x npm/bin/whichdep.js npm/bin/install.js
+      - name: Update npm for Trusted Publishing
+        run: npm install -g npm@latest
+      - name: Show npm version
+        run: npm --version
       - name: Publish to npm via Trusted Publishing
         working-directory: npm
         run: npm publish --provenance --access public
