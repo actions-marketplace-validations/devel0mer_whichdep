@@ -1,0 +1,48 @@
+{
+  "name": "whichdep",
+  "version": "0.0.1",
+  "description": "git bisect for lockfiles — isolate which dependency update broke your build (Cargo, uv, pip, npm, pnpm)",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/devel0mer/whichdep.git"
+  },
+  "homepage": "https://github.com/devel0mer/whichdep#readme",
+  "bugs": {
+    "url": "https://github.com/devel0mer/whichdep/issues"
+  },
+  "keywords": [
+    "bisect",
+    "delta-debugging",
+    "dependencies",
+    "lockfile",
+    "regression",
+    "npm",
+    "pnpm",
+    "cargo",
+    "uv"
+  ],
+  "bin": {
+    "whichdep": "bin/whichdep.js"
+  },
+  "files": [
+    "bin/whichdep.js",
+    "bin/install.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "postinstall": "node bin/install.js"
+  }
+}
