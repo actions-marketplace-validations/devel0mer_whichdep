@@ -671,7 +671,8 @@ delta==0.5.0
     #[test]
     fn learns_dynamic_closure_edges_from_pip_check_failures() {
         // Plain pip freeze (no # via comments at all).
-        let good = "mcp==1.30.0\nidna==3.10\ngoogle-genai==1.2.0\nwebsockets==14.0\nsniffio==1.3.1\n";
+        let good =
+            "mcp==1.30.0\nidna==3.10\ngoogle-genai==1.2.0\nwebsockets==14.0\nsniffio==1.3.1\n";
         let bad = "mcp==2.3.0\nidna==3.20\ngoogle-genai==1.15.0\nwebsockets==17.4\nopentelemetry-api==1.45.2\n";
         let p = PipPlan::new("requirements.txt", good, bad).unwrap();
         let idx = |name: &str| p.changes().iter().position(|c| c.name == name).unwrap();
@@ -683,14 +684,20 @@ delta==0.5.0
         let sniffio = idx("sniffio");
 
         // Initially no # via edges exist.
-        assert_eq!(p.closure().up(&[mcp].into_iter().collect()), [mcp].into_iter().collect());
+        assert_eq!(
+            p.closure().up(&[mcp].into_iter().collect()),
+            [mcp].into_iter().collect()
+        );
 
         // Case 1 & 2: mcp (applied) requires otel (not applied) and idna>=3.18 (not applied).
         let log1 = "\
 mcp 2.3.0 requires opentelemetry-api, which is not installed.
 mcp 2.3.0 has requirement idna>=3.18, but you have idna 3.10.
 ";
-        assert_eq!(p.learn_from_prepare_failure(&[mcp].into_iter().collect(), log1), 2);
+        assert_eq!(
+            p.learn_from_prepare_failure(&[mcp].into_iter().collect(), log1),
+            2
+        );
         assert_eq!(
             p.closure().up(&[mcp].into_iter().collect()),
             [mcp, otel, idna].into_iter().collect()

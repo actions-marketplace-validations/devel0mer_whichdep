@@ -162,9 +162,7 @@ impl Closure for DepClosure {
             let broken: Vec<usize> = out
                 .iter()
                 .copied()
-                .filter(|x| {
-                    !self.forced.contains(x) && req[*x].iter().any(|r| !out.contains(r))
-                })
+                .filter(|x| !self.forced.contains(x) && req[*x].iter().any(|r| !out.contains(r)))
                 .collect();
             if broken.is_empty() {
                 return out;
