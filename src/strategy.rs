@@ -5,7 +5,7 @@
 //! outcomes automatically.
 
 use crate::dd::{
-    check_endpoints, find_culprits, minimize, Closure, Culprit, DdError, Exhausted, Findings,
+    check_endpoints, find_causes, minimize, Cause, Closure, DdError, Exhausted, Findings,
     MinResult, Outcome, Runner, Set, Verdict,
 };
 use crate::oracle::Oracle;
@@ -14,13 +14,13 @@ use std::fmt;
 /// Built-in search strategies.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum StrategyKind {
-    /// Zeller's delta debugging (`ddmin`) with multi-culprit verification.
+    /// Zeller's delta debugging (`ddmin`) with multi-cause verification.
     #[default]
     Ddmin,
     /// Fast `O(log2 n)` binary search over change halves. Stops early if an
     /// interaction pair or unresolved split prevents pure halving.
     Bisect,
-    /// Binary search first for fast single-culprit isolation, automatically
+    /// Binary search first for fast single-cause isolation, automatically
     /// falling back to `ddmin` (reusing the warm cache) on interactions or
     /// unresolved splits.
     Adaptive,
@@ -67,7 +67,7 @@ pub trait SearchStrategy {
         n: usize,
         closure: &C,
         runner: &mut Runner<'_, O>,
-        max_culprits: usize,
+        max_causes: usize,
     ) -> Result<Findings, DdError>;
 }
 
@@ -81,19 +81,17 @@ impl SearchStrategy for StrategyKind {
         n: usize,
         closure: &C,
         runner: &mut Runner<'_, O>,
-        max_culprits: usize,
+        max_causes: usize,
     ) -> Result<Findings, DdError> {
         match self {
-            Self::Ddmin => find_culprits(n, closure, runner, max_culprits),
-            Self::Bisect => run_with_minimizer(n, closure, runner, max_culprits, |start, c, r| {
+            Self::Ddmin => find_causes(n, closure, runner, max_causes),
+            Self::Bisect => run_with_minimizer(n, closure, runner, max_causes, |start, c, r| {
                 bisect_minimize(start, c, r, false)
             }),
-            Self::Adaptive => {
-                run_with_minimizer(n, closure, runner, max_culprits, |start, c, r| {
-                    bisect_minimize(start, c, r, true)
-                })
-            }
-            Self::OneByOne => one_by_one_search(n, closure, runner, max_culprits),
+            Self::Adaptive => run_with_minimizer(n, closure, runner, max_causes, |start, c, r| {
+                bisect_minimize(start, c, r, true)
+            }),
+            Self::OneByOne => one_by_one_search(n, closure, runner, max_causes),
         }
     }
 }
@@ -102,7 +100,7 @@ fn run_with_minimizer<O, C, F>(
     n: usize,
     closure: &C,
     runner: &mut Runner<'_, O>,
-    max_culprits: usize,
+    max_causes: usize,
     mut minimizer: F,
 ) -> Result<Findings, DdError>
 where
@@ -112,8 +110,8 @@ where
 {
     let base = closure.up(&Set::new());
     let mut remaining = check_endpoints(n, closure, runner)?;
-    let mut culprits: Vec<Culprit> = Vec::new();
-    let max_culprits = max_culprits.max(1);
+    let mut causes: Vec<Cause> = Vec::new();
+    let max_causes = max_causes.max(1);
 
     let verdict = loop {
         let m = minimizer(remaining.clone(), closure, runner);
@@ -122,13 +120,10 @@ where
         }
         let exhausted = m.exhausted;
         let mut next = remaining.clone();
-        for u in &m.culprits {
+        for u in &m.causes {
             next.remove(u);
         }
-        culprits.push(Culprit {
-            units: m.culprits,
-            exhausted,
-        });
+        causes.push(Cause::from_units(closure, m.causes, exhausted));
         if exhausted {
             break Verdict::Incomplete;
         }
@@ -142,7 +137,7 @@ where
             Ok(Outcome::Pass) => break Verdict::Verified,
             Ok(Outcome::Unresolved) => break Verdict::Unverified,
             Ok(Outcome::Fail) => {
-                if culprits.len() >= max_culprits {
+                if causes.len() >= max_causes {
                     break Verdict::Incomplete;
                 }
                 remaining = next;
@@ -150,7 +145,7 @@ where
         }
     };
 
-    Ok(Findings { culprits, verdict })
+    Ok(Findings { causes, verdict })
 }
 
 /// Binary halving minimiser. When `fallback_to_ddmin` is true, stalling on an
@@ -168,7 +163,7 @@ fn bisect_minimize<O: Oracle, C: Closure>(
         let delta: Vec<usize> = cur.difference(&base).copied().collect();
         if delta.len() <= 1 {
             return MinResult {
-                culprits: delta,
+                causes: delta,
                 config: cur,
                 exhausted: false,
             };
@@ -184,9 +179,9 @@ fn bisect_minimize<O: Oracle, C: Closure>(
             }
             match runner.run(&half) {
                 Err(Exhausted) => {
-                    let culprits = cur.difference(&base).copied().collect();
+                    let causes = cur.difference(&base).copied().collect();
                     return MinResult {
-                        culprits,
+                        causes,
                         config: cur,
                         exhausted: true,
                     };
@@ -205,9 +200,9 @@ fn bisect_minimize<O: Oracle, C: Closure>(
             }
             // Pure bisect cannot isolate an interaction or unresolved split;
             // mark as not proven 1-minimal rather than misreporting.
-            let culprits = cur.difference(&base).copied().collect();
+            let causes = cur.difference(&base).copied().collect();
             return MinResult {
-                culprits,
+                causes,
                 config: cur,
                 exhausted: true,
             };
@@ -220,12 +215,12 @@ fn one_by_one_search<O: Oracle, C: Closure>(
     n: usize,
     closure: &C,
     runner: &mut Runner<'_, O>,
-    max_culprits: usize,
+    max_causes: usize,
 ) -> Result<Findings, DdError> {
     let base = closure.up(&Set::new());
     let mut remaining = check_endpoints(n, closure, runner)?;
-    let max_culprits = max_culprits.max(1);
-    let mut culprits: Vec<Culprit> = Vec::new();
+    let max_causes = max_causes.max(1);
+    let mut causes: Vec<Cause> = Vec::new();
 
     // Pass 1: probe individual closed units `up({u})`.
     let initial_delta: Vec<usize> = remaining.difference(&base).copied().collect();
@@ -237,15 +232,12 @@ fn one_by_one_search<O: Oracle, C: Closure>(
         match runner.run(&single) {
             Err(Exhausted) if runner.aborted() => return Err(DdError::Aborted),
             Err(Exhausted) => {
-                if culprits.is_empty() {
+                if causes.is_empty() {
                     let units = remaining.difference(&base).copied().collect();
-                    culprits.push(Culprit {
-                        units,
-                        exhausted: true,
-                    });
+                    causes.push(Cause::from_units(closure, units, true));
                 }
                 return Ok(Findings {
-                    culprits,
+                    causes,
                     verdict: Verdict::Incomplete,
                 });
             }
@@ -255,40 +247,37 @@ fn one_by_one_search<O: Oracle, C: Closure>(
                     remaining.remove(x);
                 }
                 remaining = closure.down(&remaining);
-                culprits.push(Culprit {
-                    units,
-                    exhausted: false,
-                });
+                causes.push(Cause::from_units(closure, units, false));
                 if remaining == base {
                     return Ok(Findings {
-                        culprits,
+                        causes,
                         verdict: Verdict::Verified,
                     });
                 }
-                if culprits.len() >= max_culprits {
+                if causes.len() >= max_causes {
                     match runner.run(&remaining) {
                         Err(Exhausted) if runner.aborted() => return Err(DdError::Aborted),
                         Err(Exhausted) => {
                             return Ok(Findings {
-                                culprits,
+                                causes,
                                 verdict: Verdict::Incomplete,
                             });
                         }
                         Ok(Outcome::Pass) => {
                             return Ok(Findings {
-                                culprits,
+                                causes,
                                 verdict: Verdict::Verified,
                             });
                         }
                         Ok(Outcome::Unresolved) => {
                             return Ok(Findings {
-                                culprits,
+                                causes,
                                 verdict: Verdict::Unverified,
                             });
                         }
                         Ok(Outcome::Fail) => {
                             return Ok(Findings {
-                                culprits,
+                                causes,
                                 verdict: Verdict::Incomplete,
                             });
                         }
@@ -299,25 +288,25 @@ fn one_by_one_search<O: Oracle, C: Closure>(
         }
     }
 
-    // Check whether reverting all individually found culprits fixed the failure.
-    if !culprits.is_empty() {
+    // Check whether reverting all individually found causes fixed the failure.
+    if !causes.is_empty() {
         match runner.run(&remaining) {
             Err(Exhausted) if runner.aborted() => return Err(DdError::Aborted),
             Err(Exhausted) => {
                 return Ok(Findings {
-                    culprits,
+                    causes,
                     verdict: Verdict::Incomplete,
                 })
             }
             Ok(Outcome::Pass) => {
                 return Ok(Findings {
-                    culprits,
+                    causes,
                     verdict: Verdict::Verified,
                 })
             }
             Ok(Outcome::Unresolved) => {
                 return Ok(Findings {
-                    culprits,
+                    causes,
                     verdict: Verdict::Unverified,
                 });
             }
@@ -341,12 +330,9 @@ fn one_by_one_search<O: Oracle, C: Closure>(
             Err(Exhausted) if runner.aborted() => return Err(DdError::Aborted),
             Err(Exhausted) => {
                 let units = remaining.difference(&base).copied().collect();
-                culprits.push(Culprit {
-                    units,
-                    exhausted: true,
-                });
+                causes.push(Cause::from_units(closure, units, true));
                 return Ok(Findings {
-                    culprits,
+                    causes,
                     verdict: Verdict::Incomplete,
                 });
             }
@@ -363,12 +349,9 @@ fn one_by_one_search<O: Oracle, C: Closure>(
             Err(Exhausted) if runner.aborted() => return Err(DdError::Aborted),
             Err(Exhausted) => {
                 let units = remaining.difference(&base).copied().collect();
-                culprits.push(Culprit {
-                    units,
-                    exhausted: true,
-                });
+                causes.push(Cause::from_units(closure, units, true));
                 return Ok(Findings {
-                    culprits,
+                    causes,
                     verdict: Verdict::Incomplete,
                 });
             }
@@ -379,13 +362,10 @@ fn one_by_one_search<O: Oracle, C: Closure>(
                     after.remove(x);
                 }
                 let after = closure.down(&after);
-                culprits.push(Culprit {
-                    units,
-                    exhausted: false,
-                });
+                causes.push(Cause::from_units(closure, units, false));
                 if after == base {
                     return Ok(Findings {
-                        culprits,
+                        causes,
                         verdict: Verdict::Verified,
                     });
                 }
@@ -395,7 +375,7 @@ fn one_by_one_search<O: Oracle, C: Closure>(
                     Ok(Outcome::Pass) => Verdict::Verified,
                     Ok(Outcome::Unresolved) => Verdict::Unverified,
                 };
-                return Ok(Findings { culprits, verdict });
+                return Ok(Findings { causes, verdict });
             }
             Ok(Outcome::Pass | Outcome::Unresolved) => {}
         }
@@ -408,16 +388,13 @@ fn one_by_one_search<O: Oracle, C: Closure>(
     }
     let exhausted = m.exhausted;
     let mut after = remaining;
-    for u in &m.culprits {
+    for u in &m.causes {
         after.remove(u);
     }
-    culprits.push(Culprit {
-        units: m.culprits,
-        exhausted,
-    });
+    causes.push(Cause::from_units(closure, m.causes, exhausted));
     if exhausted {
         return Ok(Findings {
-            culprits,
+            causes,
             verdict: Verdict::Incomplete,
         });
     }
@@ -432,7 +409,7 @@ fn one_by_one_search<O: Oracle, C: Closure>(
             Ok(Outcome::Unresolved) => Verdict::Unverified,
         }
     };
-    Ok(Findings { culprits, verdict })
+    Ok(Findings { causes, verdict })
 }
 
 #[cfg(test)]
@@ -441,7 +418,7 @@ mod tests {
     use crate::dd::{DepClosure, NoClosure};
 
     #[test]
-    fn bisect_and_adaptive_find_single_culprit_in_logarithmic_trials() {
+    fn bisect_and_adaptive_find_single_cause_in_logarithmic_trials() {
         for strategy in [StrategyKind::Bisect, StrategyKind::Adaptive] {
             let mut oracle = |s: &Set| {
                 if s.contains(&42) {
@@ -453,9 +430,9 @@ mod tests {
             let mut runner = Runner::new(&mut oracle);
             let found = strategy.search(100, &NoClosure, &mut runner, 5).unwrap();
             assert_eq!(found.verdict, Verdict::Verified);
-            assert_eq!(found.culprits.len(), 1);
-            assert_eq!(found.culprits[0].units, vec![42]);
-            assert!(!found.culprits[0].exhausted);
+            assert_eq!(found.causes.len(), 1);
+            assert_eq!(found.causes[0].units, vec![42]);
+            assert!(!found.causes[0].exhausted);
             assert!(
                 runner.stats.executed <= 18,
                 "{strategy}: {} trials",
@@ -478,8 +455,8 @@ mod tests {
             .search(100, &NoClosure, &mut r_adaptive, 5)
             .unwrap();
         assert_eq!(adaptive.verdict, Verdict::Verified);
-        assert_eq!(adaptive.culprits[0].units, vec![7, 71]);
-        assert!(!adaptive.culprits[0].exhausted);
+        assert_eq!(adaptive.causes[0].units, vec![7, 71]);
+        assert!(!adaptive.causes[0].exhausted);
         drop(r_adaptive);
 
         let mut r_bisect = Runner::new(&mut oracle);
@@ -487,11 +464,11 @@ mod tests {
             .search(100, &NoClosure, &mut r_bisect, 5)
             .unwrap();
         assert_eq!(bisect.verdict, Verdict::Incomplete);
-        assert!(bisect.culprits[0].exhausted);
+        assert!(bisect.causes[0].exhausted);
     }
 
     #[test]
-    fn one_by_one_finds_single_multiple_and_pair_culprits() {
+    fn one_by_one_finds_single_multiple_and_pair_causes() {
         let mut single = |s: &Set| {
             if s.contains(&2) || s.contains(&5) {
                 Outcome::Fail
@@ -504,7 +481,7 @@ mod tests {
             .search(6, &NoClosure, &mut r, 5)
             .unwrap();
         assert_eq!(found.verdict, Verdict::Verified);
-        let mut sets: Vec<Vec<usize>> = found.culprits.iter().map(|c| c.units.clone()).collect();
+        let mut sets: Vec<Vec<usize>> = found.causes.iter().map(|c| c.units.clone()).collect();
         sets.sort();
         assert_eq!(sets, vec![vec![2], vec![5]]);
 
@@ -520,7 +497,7 @@ mod tests {
             .search(6, &NoClosure, &mut r2, 5)
             .unwrap();
         assert_eq!(found2.verdict, Verdict::Verified);
-        assert_eq!(found2.culprits[0].units, vec![1, 4]);
+        assert_eq!(found2.causes[0].units, vec![1, 4]);
     }
 
     #[test]
@@ -542,7 +519,7 @@ mod tests {
             let mut runner = Runner::new(&mut oracle);
             let found = strategy.search(10, &closure, &mut runner, 5).unwrap();
             assert_eq!(found.verdict, Verdict::Verified);
-            assert_eq!(found.culprits[0].units, vec![4, 5]);
+            assert_eq!(found.causes[0].units, vec![4, 5]);
         }
     }
 }

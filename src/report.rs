@@ -85,7 +85,7 @@ impl Report {
 
     pub fn exit_code(&self) -> i32 {
         match &self.result {
-            SearchResult::Found(f) if f.culprits.iter().all(|c| !c.exhausted) => 0,
+            SearchResult::Found(f) if f.causes.iter().all(|c| !c.exhausted) => 0,
             SearchResult::ListOnly => 0,
             SearchResult::Fatal(_) => 2,
             _ => 1,
@@ -185,6 +185,15 @@ fn explain(report: &Report, err: DdError, ui: Ui) -> String {
         if !tail.is_empty() {
             let _ = writeln!(out, "  Last lines of its output:\n{tail}");
         }
+        if err == DdError::BadPasses
+            && report.kind == "cargo"
+            && (tail.contains("#[warn(") || tail.contains("warning:"))
+        {
+            let _ = writeln!(
+                out,
+                "  Compiler warnings were emitted; if CI treats warnings as errors, retry with RUSTFLAGS=\"-D warnings\"."
+            );
+        }
     }
     if !hint.is_empty() {
         let _ = writeln!(out, "  {hint}");
@@ -218,38 +227,51 @@ pub fn text(report: &Report, ui: Ui) -> String {
             o.push_str(&explain(report, *err, ui));
         }
         SearchResult::Found(f) => {
-            let many = f.culprits.len() > 1;
-            for (i, c) in f.culprits.iter().enumerate() {
-                let head = match (many, c.units.len() > 1) {
-                    (false, false) => "Culprit".to_string(),
-                    (false, true) => "Culprit: these updates break the tests together".to_string(),
-                    (true, false) => format!("Culprit {} of {}", i + 1, f.culprits.len()),
+            let many = f.causes.len() > 1;
+            for (i, c) in f.causes.iter().enumerate() {
+                let interaction = c.is_interaction();
+                let companions = c.companions();
+                let display_roots: &[usize] = if c.roots.is_empty() {
+                    &c.units
+                } else {
+                    &c.roots
+                };
+                let head = match (many, interaction) {
+                    (false, false) => "Root cause".to_string(),
+                    (false, true) => {
+                        "Root cause: these updates break the tests together".to_string()
+                    }
+                    (true, false) => format!("Root cause {} of {}", i + 1, f.causes.len()),
                     (true, true) => format!(
-                        "Culprit {} of {}: these updates break the tests together",
+                        "Root cause {} of {}: these updates break the tests together",
                         i + 1,
-                        f.culprits.len()
+                        f.causes.len()
                     ),
                 };
                 let _ = writeln!(o, "{}", ui.bold(&head));
-                for &u in &c.units {
+                for &u in display_roots {
                     let _ = writeln!(o, "  {}", change_line(&report.changes[u]));
                 }
-                if c.units.len() > 1 {
-                    let _ = writeln!(
-                        o,
+                if !companions.is_empty() {
+                    let _ = writeln!(o, "  Required companion updates:");
+                    for &u in &companions {
+                        let _ = writeln!(o, "    {}", change_line(&report.changes[u]));
+                    }
+                }
+                if interaction {
+                    let msg = if companions.is_empty() {
                         "  Leaving out any single one of them no longer reproduces the failure."
-                    );
+                    } else {
+                        "  Leaving out any single root update no longer reproduces the failure."
+                    };
+                    let _ = writeln!(o, "{msg}");
                 }
                 if c.exhausted {
                     let _ = writeln!(o, "  Stopped early: the trial budget ran out, this set may not be minimal yet.");
                 }
                 let _ = writeln!(o);
             }
-            let what = if many {
-                "these culprits"
-            } else {
-                "this culprit"
-            };
+            let what = if many { "these causes" } else { "this cause" };
             match f.verdict {
                 Verdict::Verified => {
                     let _ = writeln!(
@@ -268,19 +290,19 @@ pub fn text(report: &Report, ui: Ui) -> String {
                 Verdict::Incomplete => {
                     let _ = writeln!(
                         o,
-                        "{} The bad lockfile without {what} still fails: stopped by --max-trials or --max-culprits.",
+                        "{} The bad lockfile without {what} still fails: stopped by --max-trials or --max-causes.",
                         ui.yellow("Incomplete:")
                     );
                 }
             }
-            let pins: Vec<&String> = f
-                .culprits
-                .iter()
-                .flat_map(|c| c.units.iter())
-                .filter_map(|&u| report.hints.get(u).and_then(|h| h.as_ref()))
-                .collect();
+            let pins = revert_commands(report);
             if !pins.is_empty() {
-                let _ = writeln!(o, "\nTo put them back to the good versions:");
+                let heading = if pins.len() == 1 {
+                    "\nTo put it back to the good version:"
+                } else {
+                    "\nTo put them back to the good versions:"
+                };
+                let _ = writeln!(o, "{heading}");
                 for p in pins {
                     let _ = writeln!(o, "  {p}");
                 }
@@ -327,14 +349,23 @@ fn change_json(i: usize, c: &Change, hint: Option<&String>) -> Json {
     ])
 }
 
-/// Deduplicated revert / pin commands for all reported culprit units.
+/// Deduplicated revert / pin commands for the root units of all reported causes.
+///
+/// Required companion updates are excluded because reverting the root package
+/// lets the package manager resolve its companions back automatically, whereas
+/// pinning a companion while the root still requires the new major version fails.
 pub fn revert_commands(report: &Report) -> Vec<String> {
     let SearchResult::Found(f) = &report.result else {
         return Vec::new();
     };
     let mut out = Vec::new();
-    for c in &f.culprits {
-        for &u in &c.units {
+    for c in &f.causes {
+        let targets: &[usize] = if c.roots.is_empty() {
+            &c.units
+        } else {
+            &c.roots
+        };
+        for &u in targets {
             if let Some(Some(hint)) = report.hints.get(u) {
                 if !out.contains(hint) {
                     out.push(hint.clone());
@@ -346,33 +377,41 @@ pub fn revert_commands(report: &Report) -> Vec<String> {
 }
 
 pub fn json(report: &Report) -> String {
-    let (status, error, verdict, culprits) = match &report.result {
+    let change_arr = |units: &[usize]| -> Json {
+        Json::Arr(
+            units
+                .iter()
+                .map(|&u| {
+                    change_json(
+                        u,
+                        &report.changes[u],
+                        report.hints.get(u).and_then(|h| h.as_ref()),
+                    )
+                })
+                .collect(),
+        )
+    };
+    let (status, error, verdict, causes) = match &report.result {
         SearchResult::Found(f) => {
-            let culprits: Vec<Json> = f
-                .culprits
+            let causes: Vec<Json> = f
+                .causes
                 .iter()
                 .map(|c| {
+                    let roots: &[usize] = if c.roots.is_empty() {
+                        &c.units
+                    } else {
+                        &c.roots
+                    };
+                    let companions = c.companions();
                     Json::obj([
-                        (
-                            "changes",
-                            Json::Arr(
-                                c.units
-                                    .iter()
-                                    .map(|&u| {
-                                        change_json(
-                                            u,
-                                            &report.changes[u],
-                                            report.hints.get(u).and_then(|h| h.as_ref()),
-                                        )
-                                    })
-                                    .collect(),
-                            ),
-                        ),
+                        ("changes", change_arr(&c.units)),
+                        ("roots", change_arr(roots)),
+                        ("companions", change_arr(&companions)),
                         ("minimal", Json::Bool(!c.exhausted)),
                     ])
                 })
                 .collect();
-            ("found", Json::Null, Json::str(f.verdict.as_str()), culprits)
+            ("found", Json::Null, Json::str(f.verdict.as_str()), causes)
         }
         SearchResult::NoResult(e) => ("no-result", Json::str(e.to_string()), Json::Null, vec![]),
         SearchResult::Fatal(m) => ("error", Json::str(m), Json::Null, vec![]),
@@ -382,7 +421,7 @@ pub fn json(report: &Report) -> String {
         &report.result,
         SearchResult::Found(f) if f.verdict == Verdict::Verified
     );
-    let culprit_sets = culprits.len();
+    let cause_sets = causes.len();
     let revert_cmds = revert_commands(report);
     let s = report.stats();
     let name_of = |config: &[usize]| -> Json {
@@ -429,11 +468,11 @@ pub fn json(report: &Report) -> String {
             "summary",
             Json::obj([
                 ("total_changes", Json::int(report.changes.len())),
-                ("culprit_sets", Json::int(culprit_sets)),
+                ("cause_sets", Json::int(cause_sets)),
                 ("verified", Json::Bool(verified)),
             ]),
         ),
-        ("culprits", Json::Arr(culprits)),
+        ("causes", Json::Arr(causes)),
         ("revert_commands", Json::strs(revert_cmds)),
         (
             "changes",
@@ -461,4 +500,120 @@ pub fn json(report: &Report) -> String {
         ),
     ])
     .pretty()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dd::{Cause, Findings};
+
+    fn cargo_chain_report() -> Report {
+        Report {
+            kind: "cargo".to_string(),
+            lockfile: "Cargo.lock".to_string(),
+            strategy: "adaptive".to_string(),
+            good: "HEAD".to_string(),
+            bad: "working tree".to_string(),
+            changes: vec![
+                Change {
+                    name: "getrandom".to_string(),
+                    from: vec!["0.2.17".to_string()],
+                    to: vec!["0.3.4".to_string()],
+                },
+                Change {
+                    name: "rand".to_string(),
+                    from: vec!["0.8.5".to_string()],
+                    to: vec!["0.9.5".to_string()],
+                },
+                Change {
+                    name: "rand_core".to_string(),
+                    from: vec!["0.6.4".to_string()],
+                    to: vec!["0.9.5".to_string()],
+                },
+            ],
+            hints: vec![
+                Some("cargo update getrandom@0.3.4 --precise 0.2.17".to_string()),
+                Some("cargo update rand@0.9.5 --precise 0.8.5".to_string()),
+                Some("cargo update rand_core@0.9.5 --precise 0.6.4".to_string()),
+            ],
+            warnings: vec![],
+            result: SearchResult::Found(Findings {
+                causes: vec![Cause {
+                    units: vec![0, 1, 2],
+                    roots: vec![1],
+                    exhausted: false,
+                }],
+                verdict: Verdict::Verified,
+            }),
+            records: vec![],
+            cached_trials: vec![],
+            cache_hits: 0,
+            secs: 1.0,
+            kept: None,
+            experiment_id: None,
+        }
+    }
+
+    #[test]
+    fn single_root_with_companions_is_not_reported_as_interaction() {
+        let rep = cargo_chain_report();
+        let out = text(&rep, Ui::plain());
+        assert!(
+            !out.contains("these updates break the tests together"),
+            "{out}"
+        );
+        assert!(!out.contains("Leaving out any single one of them"), "{out}");
+        assert!(out.contains("Root cause\n  rand  0.8.5 → 0.9.5\n"), "{out}");
+        assert!(out.contains("Required companion updates:"), "{out}");
+        assert!(out.contains("    getrandom  0.2.17 → 0.3.4\n"), "{out}");
+        assert!(out.contains("    rand_core  0.6.4 → 0.9.5\n"), "{out}");
+        assert!(
+            out.contains(
+                "To put it back to the good version:\n  cargo update rand@0.9.5 --precise 0.8.5\n"
+            ),
+            "{out}"
+        );
+        assert!(!out.contains("cargo update getrandom@"), "{out}");
+        assert!(!out.contains("cargo update rand_core@"), "{out}");
+
+        let parsed = Json::parse(&json(&rep)).unwrap();
+        let cause = &parsed.get("causes").unwrap().as_arr().unwrap()[0];
+        assert_eq!(cause.get("changes").unwrap().as_arr().unwrap().len(), 3);
+        assert_eq!(cause.get("roots").unwrap().as_arr().unwrap().len(), 1);
+        assert_eq!(cause.get("companions").unwrap().as_arr().unwrap().len(), 2);
+        let cmds = parsed.get("revert_commands").unwrap().as_arr().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(
+            cmds[0].as_str(),
+            Some("cargo update rand@0.9.5 --precise 0.8.5")
+        );
+    }
+
+    #[test]
+    fn bad_passes_with_cargo_deprecation_warning_suggests_deny_warnings() {
+        let log_path =
+            std::env::temp_dir().join(format!("whichdep-warn-hint-{}.log", std::process::id()));
+        fs::write(
+            &log_path,
+            "warning: use of deprecated function `rand::thread_rng`\n= note: `#[warn(deprecated)]` on by default\n",
+        )
+        .unwrap();
+        let mut rep = cargo_chain_report();
+        rep.result = SearchResult::NoResult(DdError::BadPasses);
+        rep.records = vec![Record {
+            no: 2,
+            config: vec![0, 1, 2],
+            outcome: Outcome::Pass,
+            reason: "exit 0".to_string(),
+            secs: 1.0,
+            reused_from: None,
+            log: Some(log_path.clone()),
+        }];
+        let out = text(&rep, Ui::plain());
+        let _ = fs::remove_file(&log_path);
+        assert!(
+            out.contains("RUSTFLAGS=\"-D warnings\""),
+            "expected -D warnings hint in:\n{out}"
+        );
+    }
 }

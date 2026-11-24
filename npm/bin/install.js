@@ -12,14 +12,20 @@ const TARGETS = {
   "darwin:x64": "x86_64-apple-darwin",
   "linux:x64": "x86_64-unknown-linux-gnu",
   "linux:arm64": "aarch64-unknown-linux-gnu",
+  "win32:x64": "x86_64-pc-windows-msvc",
 };
 
 function targetTriple() {
   return TARGETS[`${process.platform}:${process.arch}`] || null;
 }
 
+function binaryName() {
+  return process.platform === "win32" ? "whichdep.exe" : "whichdep";
+}
+
 function binaryPath() {
-  return path.join(__dirname, "whichdep-bin");
+  const name = process.platform === "win32" ? "whichdep-bin.exe" : "whichdep-bin";
+  return path.join(__dirname, name);
 }
 
 async function downloadBinary({ silent = false } = {}) {
@@ -58,9 +64,11 @@ async function downloadBinary({ silent = false } = {}) {
     try {
       fs.writeFileSync(archive, buf);
       execFileSync("tar", ["-xzf", archive, "-C", tmpDir], { stdio: "ignore" });
-      const extracted = path.join(tmpDir, "whichdep");
+      const extracted = path.join(tmpDir, binaryName());
       fs.renameSync(extracted, dest);
-      fs.chmodSync(dest, 0o755);
+      if (process.platform !== "win32") {
+        fs.chmodSync(dest, 0o755);
+      }
       return true;
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });

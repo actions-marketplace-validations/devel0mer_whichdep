@@ -798,18 +798,24 @@ impl Ecosystem for PnpmPlan {
     }
 
     fn default_prepare(&self) -> &'static str {
-        r#"set -e
+        #[cfg(windows)]
+        {
+            r#"pnpm install --frozen-lockfile --store-dir "%WHICHDEP_PNPM_STORE%""#
+        }
+        #[cfg(not(windows))]
+        {
+            r#"set -e
 pnpm install --frozen-lockfile --store-dir "$WHICHDEP_PNPM_STORE"
 "#
+        }
     }
 
     fn env(&self, trial_dir: &Path, shared_dir: &Path) -> Vec<(String, String)> {
         let bin = trial_dir.join("node_modules").join(".bin");
         let store = shared_dir.join("pnpm-store");
-        let path = std::env::var("PATH").unwrap_or_default();
         vec![
             ("WHICHDEP_PNPM_STORE".into(), store.display().to_string()),
-            ("PATH".into(), format!("{}:{}", bin.display(), path)),
+            ("PATH".into(), crate::exec::prepend_path(&bin)),
         ]
     }
 

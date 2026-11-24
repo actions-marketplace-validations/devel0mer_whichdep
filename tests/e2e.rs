@@ -117,7 +117,7 @@ const GOOD8: &str = "alpha==1.0.0\nbadlib==1.0.0\nbeta==2.1.0\ndelta==0.9.1\neps
 const BAD8: &str = "alpha==1.0.2\nbadlib==1.1.0\nbeta==2.2.0\ndelta==0.9.3\nepsilon==3.5.0\ngamma==1.2.1\nkappa==0.3.1\nlambda==4.1.0\nnewcomer==0.1.0\n";
 
 #[test]
-fn finds_a_single_culprit() {
+fn finds_a_single_cause() {
     let d = Dir::new("single");
     with_script(
         &d,
@@ -139,7 +139,7 @@ fn finds_a_single_culprit() {
     );
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
     assert!(
-        r.out.contains("Culprit\n  badlib  1.0.0 → 1.1.0\n"),
+        r.out.contains("Root cause\n  badlib  1.0.0 → 1.1.0\n"),
         "{}",
         r.out
     );
@@ -192,7 +192,7 @@ fn finds_a_pair_that_only_breaks_together() {
 }
 
 #[test]
-fn finds_independent_culprits() {
+fn finds_independent_causes() {
     let d = Dir::new("independent");
     with_script(
         &d,
@@ -214,7 +214,7 @@ fn finds_independent_culprits() {
     );
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
     assert!(
-        r.out.contains("Culprit 1 of 2") && r.out.contains("Culprit 2 of 2"),
+        r.out.contains("Root cause 1 of 2") && r.out.contains("Root cause 2 of 2"),
         "{}",
         r.out
     );
@@ -229,7 +229,7 @@ fn finds_independent_culprits() {
 #[test]
 fn configurations_that_cannot_be_tested_are_skipped_not_blamed() {
     let d = Dir::new("unresolved");
-    // foo and bar only work as a pair (exit 125 = cannot be tested), baz is the culprit.
+    // foo and bar only work as a pair (exit 125 = cannot be tested), baz is the cause.
     with_script(
         &d,
         "foo==1\nbaz==1\nqux==1\nbar==1\n",
@@ -249,7 +249,7 @@ fn configurations_that_cannot_be_tested_are_skipped_not_blamed() {
         ],
     );
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
-    assert!(r.out.contains("Culprit\n  baz  1 → 2\n"), "{}", r.out);
+    assert!(r.out.contains("Root cause\n  baz  1 → 2\n"), "{}", r.out);
     assert!(
         !r.out.contains(" 0 unresolved"),
         "the search was meant to hit untestable states:\n{}",
@@ -460,7 +460,7 @@ fn a_timeout_counts_as_a_failure() {
     );
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
     assert!(
-        r.out.contains("Culprit\n  badlib  1.0.0 → 1.1.0\n"),
+        r.out.contains("Root cause\n  badlib  1.0.0 → 1.1.0\n"),
         "{}",
         r.out
     );
@@ -596,7 +596,7 @@ fn uv_installs_real_wheels_and_untestable_mixes_are_skipped() {
     let r = whichdep(d.path(), &["--good", "HEAD", "--", "python", "check.py"]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
     assert!(
-        r.out.contains("Culprit\n  badlib  1.0 → 1.1\n"),
+        r.out.contains("Root cause\n  badlib  1.0 → 1.1\n"),
         "{}",
         r.out
     );
@@ -739,7 +739,7 @@ fn cargo_finds_the_crate_that_broke_the_build() {
     let r = whichdep(d.path(), &["--good", "HEAD", "--", "cargo", "test", "-q"]);
     assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
     assert!(
-        r.out.contains("Culprit\n  gamma  1.0.0 → 1.0.1\n"),
+        r.out.contains("Root cause\n  gamma  1.0.0 → 1.0.1\n"),
         "{}",
         r.out
     );
@@ -801,7 +801,7 @@ fn cli_resumes_from_persistent_cache_and_no_resume_reruns() {
     );
     assert_eq!(first.code, 0, "{}\n{}", first.out, first.err);
     assert!(
-        first.out.contains("Culprit\n  badlib  1.0.0 → 1.1.0\n"),
+        first.out.contains("Root cause\n  badlib  1.0.0 → 1.1.0\n"),
         "{}",
         first.out
     );
@@ -1170,4 +1170,48 @@ fn platform_outputs_subcommands_and_github_summary_work_end_to_end() {
     let clean = whichdep(d.path(), &["clean", "--build-only"]);
     assert_eq!(clean.code, 0, "{}\n{}", clean.out, clean.err);
     assert!(clean.out.contains("cleaned build caches"), "{}", clean.out);
+}
+
+#[test]
+fn closure_companions_are_reported_under_single_root_cause() {
+    let d = Dir::new("closure-root");
+    // `app` requires newly added `helper` via pip `# via` annotation.
+    // The closure pulls `helper` whenever `app` is upgraded, so `app` is the
+    // single root and `helper` is a required companion, NOT a 2-package interaction.
+    let good = "app==1.0\nother==1.0\n";
+    let bad = "app==2.0\nhelper==1.0\n    # via app\nother==2.0\n";
+    with_script(&d, good, bad, "if has app 2.0; then exit 1; fi");
+
+    let r = whichdep(
+        d.path(),
+        &[
+            "--good",
+            "HEAD",
+            "--prepare",
+            "none",
+            "--",
+            "sh",
+            "check.sh",
+        ],
+    );
+    assert_eq!(r.code, 0, "{}\n{}", r.out, r.err);
+    assert!(
+        !r.out.contains("these updates break the tests together"),
+        "{}",
+        r.out
+    );
+    assert!(
+        !r.out.contains("Leaving out any single one of them"),
+        "{}",
+        r.out
+    );
+    assert!(r.out.contains("  app  1.0 → 2.0\n"), "{}", r.out);
+    assert!(r.out.contains("Required companion updates:"), "{}", r.out);
+    assert!(r.out.contains("    helper  1.0 (new)\n"), "{}", r.out);
+    assert!(
+        r.out
+            .contains("To put it back to the good version:\n  app==1.0\n"),
+        "{}",
+        r.out
+    );
 }

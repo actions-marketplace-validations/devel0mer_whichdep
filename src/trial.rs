@@ -63,6 +63,17 @@ pub struct Record {
 /// The line of a command's output that says best why it failed: the first
 /// `error...` line, otherwise the last line (`pip check` and friends do not
 /// say "error").
+fn shell_command(script: &str) -> (&'static str, Vec<String>) {
+    #[cfg(windows)]
+    {
+        ("cmd", vec!["/C".to_string(), script.to_string()])
+    }
+    #[cfg(not(windows))]
+    {
+        ("sh", vec!["-c".to_string(), script.to_string()])
+    }
+}
+
 fn failure_hint(log: &Path) -> Option<String> {
     let text = fs::read_to_string(log).ok()?;
     let lines: Vec<&str> = text
@@ -243,9 +254,9 @@ impl<'a> Trials<'a> {
         };
         if let Some(script) = script {
             self.log_line(log, "# prepare");
-            let args = ["-c".to_string(), script];
+            let (program, args) = shell_command(&script);
             let (st, _) = exec::run(&Spec {
-                program: "sh",
+                program,
                 args: &args,
                 cwd: workdir,
                 env: &env,

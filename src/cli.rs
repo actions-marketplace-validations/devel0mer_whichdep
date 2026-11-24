@@ -46,7 +46,7 @@ OPTIONS:
     --timeout <SECONDS>   Kill a test run after this long. A timeout counts as a
                           failure, so hangs can be bisected too.
     --max-trials <N>      Give up after N trials.
-    --max-culprits <N>    Stop after N independent culprits.   [default: 5]
+    --max-causes <N>    Stop after N independent causes.   [default: 5]
     --prepare <SCRIPT>    Replace the built-in environment setup with a script
                           (run with `sh -c` in the project copy). `none` skips it.
     --list                Only show what changed between good and bad.
@@ -70,7 +70,7 @@ the trial in place. Its exit status decides: 0 = pass, 125 = cannot be tested
 WHICHDEP_TRIAL and WHICHDEP_LOCKFILE are set for it.
 
 EXIT STATUS:
-    0  culprit found (or --list / management command succeeded)
+    0  cause found (or --list / management command succeeded)
     1  no result: the good lockfile fails, the bad one passes, a trial budget ran out, ...
     2  usage or environment error
 ";
@@ -85,7 +85,7 @@ pub struct Args {
     pub repeat: usize,
     pub timeout: Option<Duration>,
     pub max_trials: Option<usize>,
-    pub max_culprits: usize,
+    pub max_causes: usize,
     pub prepare: Option<String>,
     pub list: bool,
     pub json: bool,
@@ -110,7 +110,7 @@ impl Default for Args {
             repeat: 1,
             timeout: None,
             max_trials: None,
-            max_culprits: 5,
+            max_causes: 5,
             prepare: None,
             list: false,
             json: false,
@@ -338,7 +338,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String>
                     "--repeat",
                     "--timeout",
                     "--max-trials",
-                    "--max-culprits",
+                    "--max-causes",
                     "--prepare",
                 ];
                 if !known.contains(&flag.as_str()) {
@@ -359,7 +359,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String>
                     "--prepare" => a.prepare = Some(value),
                     "--repeat" => a.repeat = positive(&flag, &value)?,
                     "--max-trials" => a.max_trials = Some(positive(&flag, &value)?),
-                    "--max-culprits" => a.max_culprits = positive(&flag, &value)?,
+                    "--max-causes" => a.max_causes = positive(&flag, &value)?,
                     "--timeout" => match value.parse::<f64>() {
                         Ok(s) if s.is_finite() && s > 0.0 => a.timeout = Some(Duration::from_secs_f64(s)),
                         _ => return Err(format!("--timeout needs a number of seconds above 0, got `{value}`")),
@@ -446,7 +446,7 @@ mod tests {
         assert!(a.json && a.keep && a.verbose && a.github_summary && !a.list && a.resume);
         assert_eq!(a.format, OutputFormat::Json);
         assert_eq!(a.strategy, StrategyKind::Ddmin);
-        assert_eq!((a.repeat, a.max_culprits), (1, 5));
+        assert_eq!((a.repeat, a.max_causes), (1, 5));
         assert!(!run(&["--good", "v1", "--no-resume", "--", "true"]).resume);
     }
 

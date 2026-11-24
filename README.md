@@ -14,10 +14,10 @@ whichdep 0.0.1 · cargo · Cargo.lock
   #3   pass        5 of 9 updates      exit 0
   ...
 
-Culprit
+Cause
   gamma  1.0.0 → 1.0.1
 
-Verified: The bad lockfile without this culprit passes the tests again.
+Verified: The bad lockfile without this cause passes the tests again.
 
 To put them back to the good versions:
   cargo update gamma@1.0.1 --precise 1.0.0
@@ -28,9 +28,9 @@ To put them back to the good versions:
 ## Why not just bisect by hand?
 
 - **Interactions.** Two updates that only break *together* come back as a pair, not as a wrong single answer.
-- **Several culprits.** After finding one it reverts it in the bad lockfile and checks; if the tests still fail it keeps going.
+- **Several causes.** After finding one it reverts it in the bad lockfile and checks; if the tests still fail it keeps going.
 - **Invalid mixes are not blamed.** A half-applied update that Cargo cannot lock, or that `pip check` rejects, is classified *unresolved* and skipped, never counted as a failure.
-- **Fast.** Roughly 2·log2(n) trials for one culprit; identical rendered lockfiles are not run twice, and conclusive trial outcomes can be reused across runs.
+- **Fast.** Roughly 2·log2(n) trials for one cause; identical rendered lockfiles are not run twice, and conclusive trial outcomes can be reused across runs.
 - **Isolated.** Each trial starts from a fresh copy of the project. Build caches, logs and experiment history live outside your source tree.
 
 ## Install
@@ -61,7 +61,7 @@ whichdep format --input rep.json --format github-comment
 | `--strategy` | `ddmin` (default), `bisect`, `adaptive`, or `one-by-one` |
 | `--repeat N` | Run the test N times per trial; disagreement = flaky = unresolved |
 | `--timeout S` | Kill a run after S seconds; counts as a failure (finds hangs) |
-| `--max-trials N`, `--max-culprits N` | Budgets |
+| `--max-trials N`, `--max-causes N` | Budgets |
 | `--prepare SCRIPT` | Replace the built-in environment setup (`none` skips) |
 | `--json`, `--format FMT` | `text`, `json` (`whichdep-report-v2`), `markdown`, `github-comment`, `html` |
 | `--out PATH` | Write the rendered report to a file |
@@ -136,16 +136,16 @@ cross-run cache reuse is disabled. Fingerprints are non-cryptographic, so use
 when a trial finishes; unresolved states are retried. This allows a later run
 to continue after an interrupted process, not only after a budget-limited run.
 
-## Limitations (v0.0.1)
+## Limitations (v0.1.0)
 
-- Ecosystems: `Cargo.lock` (v3/v4), `uv.lock` (v1), pinned `requirements.txt`, `package-lock.json` (v2/v3), and `pnpm-lock.yaml` (v6/v9), plus custom adapters via `AdapterRegistry`. See [docs/PLATFORM.md](docs/PLATFORM.md) for the Adapter API, search strategies, machine-readable JSON schemas, GitHub Action ([action.yml](action.yml)), and HTML dashboard export.
-- No reproduced upstream bug is in the regression corpus yet; `tests/regression_corpus/README.md` lists candidates and admission criteria. The existing Cargo/Python/npm/pnpm integration tests use synthetic fixtures/registries.
+- Ecosystems: `Cargo.lock` (v3/v4), `uv.lock` (v1), pinned `requirements.txt`, `package-lock.json` (v2/v3), and `pnpm-lock.yaml` (v6/v9), plus custom adapters via `AdapterRegistry`. See [docs/PLATFORM.md](docs/PLATFORM.md) for the Adapter API, search strategies, machine-readable JSON schemas, GitHub Action ([action.yml](action.yml)), CI security model, and HTML dashboard export.
+- Live regression reproductions are documented in [tests/regression_corpus/README.md](tests/regression_corpus/README.md) (Python `httpx`, Node `chalk`, Rust `rand`); automated offline CI tests use synthetic fixtures/registries.
 - The persistent store saves fingerprints, metadata, trial outcomes and command logs, but not a full source archive. Use `--keep` to retain the exact temporary project/trial workspaces for manual replay.
 - Workspace manifests that changed between good and bad are reported as a warning; the baseline may then be unresolved.
 - Path dependencies outside the project directory are not copied.
-- The fresh-workspace boundary is filesystem isolation, not a security sandbox: test and prepare commands still run as the current user and can access the network, home directory and external services.
+- The fresh-workspace boundary is filesystem isolation, not a security sandbox: test and prepare commands still run as the current user and can access the network, home directory and external services. Never expose production secrets to a CI job running `whichdep`.
 - Persistent resume is only as correct as the supplied Oracle and Closure fingerprints. External services, tool binaries changed in place, and environment inputs not captured by the caller may require `--no-resume`.
-- On non-Unix platforms, symbolic links in the project copy are currently rejected rather than followed. Process-tree termination on timeout is strongest on Unix.
+- On Windows, symbolic links inside the project tree are rejected rather than followed; process-tree termination on timeout uses `taskkill /T /F`.
 
 ## Related work
 

@@ -402,7 +402,13 @@ impl Ecosystem for PipPlan {
     }
 
     fn default_prepare(&self) -> &'static str {
-        r#"set -e
+        #[cfg(windows)]
+        {
+            r#"where uv >nul 2>nul && ((if not exist .whichdep-venv uv venv --quiet .whichdep-venv) && uv pip sync --quiet --python .whichdep-venv\Scripts\python.exe "%WHICHDEP_LOCKFILE%" && uv pip check --python .whichdep-venv\Scripts\python.exe) || ((if exist .whichdep-venv rmdir /s /q .whichdep-venv) && python -m venv .whichdep-venv && .whichdep-venv\Scripts\pip.exe install --quiet --no-deps -r "%WHICHDEP_LOCKFILE%" && .whichdep-venv\Scripts\pip.exe check)"#
+        }
+        #[cfg(not(windows))]
+        {
+            r#"set -e
 VENV=.whichdep-venv
 if command -v uv >/dev/null 2>&1; then
   [ -d "$VENV" ] || uv venv --quiet "$VENV"
@@ -415,17 +421,15 @@ else
   "$VENV/bin/pip" check
 fi
 "#
+        }
     }
 
     fn env(&self, trial_dir: &Path, _shared_dir: &Path) -> Vec<(String, String)> {
         let venv = trial_dir.join(".whichdep-venv");
-        let path = std::env::var("PATH").unwrap_or_default();
+        let bin_dir = crate::exec::venv_bin_dir(&venv);
         vec![
             ("VIRTUAL_ENV".into(), venv.display().to_string()),
-            (
-                "PATH".into(),
-                format!("{}:{}", venv.join("bin").display(), path),
-            ),
+            ("PATH".into(), crate::exec::prepend_path(&bin_dir)),
             ("WHICHDEP_LOCKFILE".into(), self.lockfile.clone()),
         ]
     }

@@ -86,7 +86,7 @@ pub fn markdown(rep: &Report) -> String {
             return o;
         }
         SearchResult::NoResult(err) => {
-            let _ = writeln!(o, "### whichdep — No Culprit Isolated");
+            let _ = writeln!(o, "### whichdep — No Cause Isolated");
             let _ = writeln!(
                 o,
                 "\nEcosystem: `{}` · Lockfile: `{}` · Strategy: `{}`\n",
@@ -107,19 +107,25 @@ pub fn markdown(rep: &Report) -> String {
                 rep.kind, rep.lockfile, rep.strategy, rep.good, rep.bad
             );
 
-            for (i, c) in f.culprits.iter().enumerate() {
-                if f.culprits.len() > 1 {
-                    let _ = writeln!(o, "#### Culprit {} of {}", i + 1, f.culprits.len());
+            for (i, c) in f.causes.iter().enumerate() {
+                if f.causes.len() > 1 {
+                    let _ = writeln!(o, "#### Root cause {} of {}", i + 1, f.causes.len());
                 }
-                if c.units.len() > 1 {
+                if c.is_interaction() {
                     let _ = writeln!(
                         o,
                         "*These updates reproduce the failure together (1-minimal set):*\n"
                     );
                 }
+                let display_roots: &[usize] = if c.roots.is_empty() {
+                    &c.units
+                } else {
+                    &c.roots
+                };
+                let companions = c.companions();
                 let _ = writeln!(o, "| Package | Good | Bad |");
                 let _ = writeln!(o, "| --- | --- | --- |");
-                for &u in &c.units {
+                for &u in display_roots {
                     let ch = &rep.changes[u];
                     let from = if ch.from.is_empty() {
                         "*(new)*".to_string()
@@ -133,6 +139,13 @@ pub fn markdown(rep: &Report) -> String {
                     };
                     let _ = writeln!(o, "| `{}` | {from} | {to} |", ch.name);
                 }
+                if !companions.is_empty() {
+                    let items: Vec<String> = companions
+                        .iter()
+                        .map(|&u| format!("`{}`", report::change_line(&rep.changes[u])))
+                        .collect();
+                    let _ = writeln!(o, "\n*Required companion updates:* {}", items.join(", "));
+                }
                 if c.exhausted {
                     let _ = writeln!(
                         o,
@@ -144,13 +157,13 @@ pub fn markdown(rep: &Report) -> String {
 
             let verdict_line = match f.verdict {
                 Verdict::Verified => {
-                    "**Verified:** Reverting the culprit(s) in the bad lockfile makes the test command pass again."
+                    "**Verified:** Reverting the cause(s) in the bad lockfile makes the test command pass again."
                 }
                 Verdict::Unverified => {
-                    "**Not verified:** The bad lockfile without the culprit(s) could not be built or tested."
+                    "**Not verified:** The bad lockfile without the cause(s) could not be built or tested."
                 }
                 Verdict::Incomplete => {
-                    "**Incomplete:** The bad lockfile without the culprit(s) still fails (stopped by budget or culprit limit)."
+                    "**Incomplete:** The bad lockfile without the cause(s) still fails (stopped by budget or cause limit)."
                 }
             };
             let _ = writeln!(o, "{verdict_line}\n");
@@ -275,7 +288,7 @@ pub fn format_from_report_json(json_text: &str, format: OutputFormat) -> Result<
     }
     let title = match status {
         "found" => format!("### whichdep — Dependency Regression Found ({verdict})"),
-        "no-result" => "### whichdep — No Culprit Isolated".to_string(),
+        "no-result" => "### whichdep — No Cause Isolated".to_string(),
         "error" => "### whichdep — Fatal Error".to_string(),
         _ => "### whichdep — Report".to_string(),
     };
@@ -287,12 +300,23 @@ pub fn format_from_report_json(json_text: &str, format: OutputFormat) -> Result<
     if let Some(err) = error {
         let _ = writeln!(md, "> **Reason:** {err}\n");
     }
-    if let Some(culprits) = root.get("culprits").and_then(Json::as_arr) {
-        for (i, c) in culprits.iter().enumerate() {
-            if culprits.len() > 1 {
-                let _ = writeln!(md, "#### Culprit {} of {}", i + 1, culprits.len());
+    if let Some(causes) = root.get("causes").and_then(Json::as_arr) {
+        for (i, c) in causes.iter().enumerate() {
+            if causes.len() > 1 {
+                let _ = writeln!(md, "#### Root cause {} of {}", i + 1, causes.len());
             }
-            if let Some(changes) = c.get("changes").and_then(Json::as_arr) {
+            let primary = c
+                .get("roots")
+                .and_then(Json::as_arr)
+                .filter(|a| !a.is_empty())
+                .or_else(|| c.get("changes").and_then(Json::as_arr));
+            if let Some(changes) = primary {
+                if changes.len() > 1 {
+                    let _ = writeln!(
+                        md,
+                        "*These updates reproduce the failure together (1-minimal set):*\n"
+                    );
+                }
                 let _ = writeln!(md, "| Package | Good | Bad |");
                 let _ = writeln!(md, "| --- | --- | --- |");
                 for ch in changes {
@@ -315,6 +339,18 @@ pub fn format_from_report_json(json_text: &str, format: OutputFormat) -> Result<
                         join_arr("from", "*(new)*"),
                         join_arr("to", "*(removed)*")
                     );
+                }
+                if let Some(comps) = c
+                    .get("companions")
+                    .and_then(Json::as_arr)
+                    .filter(|a| !a.is_empty())
+                {
+                    let items: Vec<String> = comps
+                        .iter()
+                        .filter_map(|ch| ch.get("package").and_then(Json::as_str))
+                        .map(|pkg| format!("`{pkg}`"))
+                        .collect();
+                    let _ = writeln!(md, "\n*Required companion updates:* {}", items.join(", "));
                 }
                 let _ = writeln!(md);
             }
@@ -363,10 +399,15 @@ pub fn emit_github_annotations(rep: &Report) {
     match &rep.result {
         SearchResult::Found(f) => {
             let names: Vec<String> = f
-                .culprits
+                .causes
                 .iter()
                 .map(|c| {
-                    c.units
+                    let display: &[usize] = if c.roots.is_empty() {
+                        &c.units
+                    } else {
+                        &c.roots
+                    };
+                    display
                         .iter()
                         .map(|&u| rep.changes[u].describe())
                         .collect::<Vec<_>>()
@@ -374,7 +415,7 @@ pub fn emit_github_annotations(rep: &Report) {
                 })
                 .collect();
             eprintln!(
-                "::error file={},title=Dependency Regression Culprit ({})::{}",
+                "::error file={},title=Dependency Regression Cause ({})::{}",
                 rep.lockfile,
                 f.verdict.as_str(),
                 names.join("; ")
@@ -406,11 +447,11 @@ pub fn html_report(rep: &Report) -> String {
     let mut body = String::new();
     let (badge_cls, status_text) = match &rep.result {
         SearchResult::Found(f) => match f.verdict {
-            Verdict::Verified => ("ok", "Culprit Isolated · Verified"),
-            Verdict::Unverified => ("warn", "Culprit Isolated · Unverified"),
+            Verdict::Verified => ("ok", "Cause Isolated · Verified"),
+            Verdict::Unverified => ("warn", "Cause Isolated · Unverified"),
             Verdict::Incomplete => ("warn", "Partial Result · Incomplete"),
         },
-        SearchResult::NoResult(_) => ("muted", "No Culprit Isolated"),
+        SearchResult::NoResult(_) => ("muted", "No Cause Isolated"),
         SearchResult::Fatal(_) => ("err", "Fatal Error"),
         SearchResult::ListOnly => ("muted", "Change List"),
     };
@@ -438,16 +479,22 @@ pub fn html_report(rep: &Report) -> String {
     );
 
     if let SearchResult::Found(f) = &rep.result {
-        let _ = writeln!(body, "<section class=\"panel\"><h2>Culprits</h2>");
-        for (i, c) in f.culprits.iter().enumerate() {
-            if f.culprits.len() > 1 {
-                let _ = writeln!(body, "<h3>Culprit {} of {}</h3>", i + 1, f.culprits.len());
+        let _ = writeln!(body, "<section class=\"panel\"><h2>Root Causes</h2>");
+        for (i, c) in f.causes.iter().enumerate() {
+            if f.causes.len() > 1 {
+                let _ = writeln!(body, "<h3>Root cause {} of {}</h3>", i + 1, f.causes.len());
             }
+            let display_roots: &[usize] = if c.roots.is_empty() {
+                &c.units
+            } else {
+                &c.roots
+            };
+            let companions = c.companions();
             let _ = writeln!(
                 body,
                 "<table><thead><tr><th>Package</th><th>Good</th><th>Bad</th></tr></thead><tbody>"
             );
-            for &u in &c.units {
+            for &u in display_roots {
                 let ch = &rep.changes[u];
                 let _ = writeln!(
                     body,
@@ -458,6 +505,22 @@ pub fn html_report(rep: &Report) -> String {
                 );
             }
             let _ = writeln!(body, "</tbody></table>");
+            if !companions.is_empty() {
+                let items: Vec<String> = companions
+                    .iter()
+                    .map(|&u| {
+                        format!(
+                            "<code>{}</code>",
+                            html_escape(&report::change_line(&rep.changes[u]))
+                        )
+                    })
+                    .collect();
+                let _ = writeln!(
+                    body,
+                    "<p class=\"sub\">Required companion updates: {}</p>",
+                    items.join(", ")
+                );
+            }
         }
         let pins = report::revert_commands(rep);
         if !pins.is_empty() {
@@ -629,7 +692,7 @@ pre {{ background: rgba(127,127,127,.1); padding: .8rem 1rem; border-radius: 8px
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dd::{Culprit, Findings};
+    use crate::dd::{Cause, Findings};
     use crate::model::Change;
 
     fn sample_report() -> Report {
@@ -647,8 +710,9 @@ mod tests {
             hints: vec![Some("npm install --save-exact zod@3.22.4".to_string())],
             warnings: vec![],
             result: SearchResult::Found(Findings {
-                culprits: vec![Culprit {
+                causes: vec![Cause {
                     units: vec![0],
+                    roots: vec![0],
                     exhausted: false,
                 }],
                 verdict: Verdict::Verified,

@@ -589,10 +589,9 @@ impl Ecosystem for NpmPlan {
     fn env(&self, trial_dir: &Path, shared_dir: &Path) -> Vec<(String, String)> {
         let bin = trial_dir.join("node_modules").join(".bin");
         let npm_cache = shared_dir.join("npm-cache");
-        let path = std::env::var("PATH").unwrap_or_default();
         vec![
             ("npm_config_cache".into(), npm_cache.display().to_string()),
-            ("PATH".into(), format!("{}:{}", bin.display(), path)),
+            ("PATH".into(), crate::exec::prepend_path(&bin)),
         ]
     }
 

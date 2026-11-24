@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "whichdep"
-version = "0.0.2"
+version = "0.1.0"
 description = "git bisect for lockfiles — isolate which dependency update broke your build"
 readme = "README.md"
 license = { text = "Apache-2.0" }

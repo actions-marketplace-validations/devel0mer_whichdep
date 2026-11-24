@@ -126,7 +126,7 @@ impl Engine {
                 experiment.units.len(),
                 closure,
                 &mut runner,
-                experiment.max_culprits,
+                experiment.max_causes,
             );
             (
                 search,

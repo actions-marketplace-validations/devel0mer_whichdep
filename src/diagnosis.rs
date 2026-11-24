@@ -58,6 +58,8 @@ impl Verification {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Finding {
     pub units: Vec<usize>,
+    /// Top-level units in `units` not required by another unit in `units`.
+    pub roots: Vec<usize>,
     /// True means the search completed its 1-minimality checks for this set.
     pub one_minimal: bool,
 }
@@ -96,10 +98,11 @@ impl Diagnosis {
                 experiment_id: experiment_id.into(),
                 strategy: "ddmin".to_string(),
                 findings: found
-                    .culprits
+                    .causes
                     .iter()
                     .map(|c| Finding {
                         units: c.units.clone(),
+                        roots: c.roots.clone(),
                         one_minimal: !c.exhausted,
                     })
                     .collect(),
@@ -140,6 +143,10 @@ impl Diagnosis {
                     (
                         "units",
                         Json::Arr(f.units.iter().map(|&n| Json::int(n)).collect()),
+                    ),
+                    (
+                        "roots",
+                        Json::Arr(f.roots.iter().map(|&n| Json::int(n)).collect()),
                     ),
                     ("one_minimal", Json::Bool(f.one_minimal)),
                 ])
@@ -207,7 +214,7 @@ impl Diagnosis {
         let mut findings = Vec::new();
         if let Some(arr) = root.get("findings").and_then(Json::as_arr) {
             for item in arr {
-                let units = item
+                let units: Vec<usize> = item
                     .get("units")
                     .and_then(Json::as_arr)
                     .map(|u| {
@@ -217,11 +224,25 @@ impl Diagnosis {
                             .collect()
                     })
                     .unwrap_or_default();
+                let roots = item
+                    .get("roots")
+                    .and_then(Json::as_arr)
+                    .map(|u| {
+                        u.iter()
+                            .filter_map(Json::as_i64)
+                            .filter_map(|n| usize::try_from(n).ok())
+                            .collect()
+                    })
+                    .unwrap_or_else(|| units.clone());
                 let one_minimal = item
                     .get("one_minimal")
                     .and_then(Json::as_bool)
                     .unwrap_or(false);
-                findings.push(Finding { units, one_minimal });
+                findings.push(Finding {
+                    units,
+                    roots,
+                    one_minimal,
+                });
             }
         }
         let mut trials = Vec::new();

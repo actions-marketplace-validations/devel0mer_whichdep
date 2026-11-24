@@ -61,7 +61,7 @@ pub struct Experiment {
     /// Fingerprint of the oracle command/configuration and relevant runtime.
     pub oracle_fingerprint: String,
     pub max_trials: Option<usize>,
-    pub max_culprits: usize,
+    pub max_causes: usize,
 }
 
 impl Experiment {
@@ -83,13 +83,13 @@ impl Experiment {
             units,
             oracle_fingerprint: oracle_fingerprint.into(),
             max_trials: None,
-            max_culprits: 5,
+            max_causes: 5,
         }
     }
 
-    pub fn with_budget(mut self, max_trials: Option<usize>, max_culprits: usize) -> Self {
+    pub fn with_budget(mut self, max_trials: Option<usize>, max_causes: usize) -> Self {
         self.max_trials = max_trials;
-        self.max_culprits = max_culprits.max(1);
+        self.max_causes = max_causes.max(1);
         self
     }
 

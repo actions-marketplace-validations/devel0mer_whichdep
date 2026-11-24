@@ -731,24 +731,28 @@ impl Ecosystem for UvPlan {
     }
 
     fn default_prepare(&self) -> &'static str {
-        r#"set -e
+        #[cfg(windows)]
+        {
+            r#"uv sync --locked --quiet && uv pip check --python "%VIRTUAL_ENV%\Scripts\python.exe""#
+        }
+        #[cfg(not(windows))]
+        {
+            r#"set -e
 uv sync --locked --quiet
 uv pip check --python "$VIRTUAL_ENV/bin/python"
 "#
+        }
     }
 
     fn env(&self, trial_dir: &Path, shared_dir: &Path) -> Vec<(String, String)> {
         let venv = trial_dir.join(".whichdep-venv");
         let uv_cache = shared_dir.join("uv-cache");
-        let path = std::env::var("PATH").unwrap_or_default();
+        let bin_dir = crate::exec::venv_bin_dir(&venv);
         vec![
             ("UV_PROJECT_ENVIRONMENT".into(), venv.display().to_string()),
             ("VIRTUAL_ENV".into(), venv.display().to_string()),
             ("UV_CACHE_DIR".into(), uv_cache.display().to_string()),
-            (
-                "PATH".into(),
-                format!("{}:{}", venv.join("bin").display(), path),
-            ),
+            ("PATH".into(), crate::exec::prepend_path(&bin_dir)),
         ]
     }
 

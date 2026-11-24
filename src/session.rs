@@ -3,7 +3,7 @@
 
 use crate::adapter::AdapterRegistry;
 use crate::cli::{Args, VERSION};
-use crate::dd::{Culprit, Findings, Verdict};
+use crate::dd::{Cause, Findings, Verdict};
 use crate::engine::{Engine, EngineError};
 use crate::fingerprint;
 use crate::git;
@@ -431,7 +431,7 @@ fn execute(a: &Args) -> Result<i32, String> {
         changes.clone(),
         oracle_fingerprint,
     )
-    .with_budget(a.max_trials, a.max_culprits);
+    .with_budget(a.max_trials, a.max_causes);
     experiment.id = format!(
         "exp-{}",
         fingerprint::hash(experiment.cache_namespace().as_bytes())
@@ -455,11 +455,12 @@ fn execute(a: &Args) -> Result<i32, String> {
             let search = if let Some(error) = diagnosis.search_error {
                 Err(error)
             } else {
-                let culprits = diagnosis
+                let causes = diagnosis
                     .findings
                     .iter()
-                    .map(|f| Culprit {
+                    .map(|f| Cause {
                         units: f.units.clone(),
+                        roots: f.roots.clone(),
                         exhausted: !f.one_minimal,
                     })
                     .collect();
@@ -469,7 +470,7 @@ fn execute(a: &Args) -> Result<i32, String> {
                     crate::diagnosis::VerificationStatus::Incomplete => Verdict::Incomplete,
                     crate::diagnosis::VerificationStatus::NotAttempted => Verdict::Unverified,
                 };
-                Ok(Findings { culprits, verdict })
+                Ok(Findings { causes, verdict })
             };
             rep.result = match (trials.fatal.take(), search) {
                 (Some(msg), _) => SearchResult::Fatal(msg),

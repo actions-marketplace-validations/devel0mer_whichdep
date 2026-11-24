@@ -16,12 +16,12 @@ fn fails_if_all(need: Vec<usize>) -> impl FnMut(&Set) -> Outcome {
 }
 
 #[test]
-fn single_culprit_is_found_in_logarithmic_trials() {
+fn single_cause_is_found_in_logarithmic_trials() {
     for k in [0usize, 1, 42, 63, 99] {
         let mut o = fails_if_all(vec![k]);
         let mut r = Runner::new(&mut o);
         let res = ddmin(100, &NoClosure, &mut r).unwrap();
-        assert_eq!(res.culprits, vec![k]);
+        assert_eq!(res.causes, vec![k]);
         assert!(!res.exhausted);
         assert!(r.stats.executed <= 20, "k={k}: {} trials", r.stats.executed);
     }
@@ -32,7 +32,7 @@ fn interacting_pair_is_reported_as_a_pair() {
     let mut o = fails_if_all(vec![3, 77]);
     let mut r = Runner::new(&mut o);
     let res = ddmin(100, &NoClosure, &mut r).unwrap();
-    assert_eq!(res.culprits, vec![3, 77]);
+    assert_eq!(res.causes, vec![3, 77]);
     assert!(r.stats.executed <= 60, "{} trials", r.stats.executed);
 }
 
@@ -41,11 +41,11 @@ fn interacting_triple_is_reported_as_a_triple() {
     let mut o = fails_if_all(vec![0, 50, 99]);
     let mut r = Runner::new(&mut o);
     let res = ddmin(100, &NoClosure, &mut r).unwrap();
-    assert_eq!(res.culprits, vec![0, 50, 99]);
+    assert_eq!(res.causes, vec![0, 50, 99]);
 }
 
 #[test]
-fn two_independent_culprits_yield_one_of_them() {
+fn two_independent_causes_yield_one_of_them() {
     let mut o = |s: &Set| {
         if s.contains(&10) || s.contains(&90) {
             Outcome::Fail
@@ -55,14 +55,14 @@ fn two_independent_culprits_yield_one_of_them() {
     };
     let mut r = Runner::new(&mut o);
     let res = ddmin(100, &NoClosure, &mut r).unwrap();
-    assert_eq!(res.culprits.len(), 1);
-    assert!(res.culprits == vec![10] || res.culprits == vec![90]);
+    assert_eq!(res.causes.len(), 1);
+    assert!(res.causes == vec![10] || res.causes == vec![90]);
 }
 
 #[test]
 fn unresolved_configurations_do_not_mislead_the_search() {
     // 19 and 20 only exist together (every other mix cannot be built) and
-    // straddle the first split, 33 is the real culprit.
+    // straddle the first split, 33 is the real cause.
     let mut o = |s: &Set| {
         if s.contains(&19) != s.contains(&20) {
             Outcome::Unresolved
@@ -74,7 +74,7 @@ fn unresolved_configurations_do_not_mislead_the_search() {
     };
     let mut r = Runner::new(&mut o);
     let res = ddmin(40, &NoClosure, &mut r).unwrap();
-    assert_eq!(res.culprits, vec![33]);
+    assert_eq!(res.causes, vec![33]);
     assert!(
         r.stats.unresolved > 0,
         "the test was meant to hit unresolved states"
@@ -82,7 +82,7 @@ fn unresolved_configurations_do_not_mislead_the_search() {
 }
 
 #[test]
-fn unresolved_pair_inside_the_culprit_is_kept_together() {
+fn unresolved_pair_inside_the_cause_is_kept_together() {
     // The failure needs 33 *and* the inseparable pair 19+20.
     let mut o = |s: &Set| {
         if s.contains(&19) != s.contains(&20) {
@@ -95,12 +95,12 @@ fn unresolved_pair_inside_the_culprit_is_kept_together() {
     };
     let mut r = Runner::new(&mut o);
     let res = ddmin(40, &NoClosure, &mut r).unwrap();
-    assert_eq!(res.culprits, vec![19, 20, 33]);
+    assert_eq!(res.causes, vec![19, 20, 33]);
     assert!(r.stats.unresolved > 0);
 }
 
 #[test]
-fn culprit_that_needs_a_companion_is_closed_over() {
+fn cause_that_needs_a_companion_is_closed_over() {
     // 7 (an update) requires 8 (a newly added crate).
     let closure = DepClosure::new(10, [(7, 8)], []);
     let mut o = |s: &Set| {
@@ -116,7 +116,7 @@ fn culprit_that_needs_a_companion_is_closed_over() {
     };
     let mut r = Runner::new(&mut o);
     let res = ddmin(10, &closure, &mut r).unwrap();
-    assert_eq!(res.culprits, vec![7, 8]);
+    assert_eq!(res.causes, vec![7, 8]);
 }
 
 #[test]
@@ -132,7 +132,7 @@ fn forced_units_are_part_of_every_configuration_but_never_reported() {
     };
     let mut r = Runner::new(&mut o);
     let res = ddmin(6, &closure, &mut r).unwrap();
-    assert_eq!(res.culprits, vec![3]);
+    assert_eq!(res.causes, vec![3]);
 }
 
 #[test]
@@ -202,8 +202,8 @@ fn budget_stops_the_search_but_keeps_a_failing_configuration() {
     let mut r = Runner::new(&mut o).with_budget(Some(5));
     let res = ddmin(100, &NoClosure, &mut r).unwrap();
     assert!(res.exhausted);
-    assert!(res.culprits.len() > 1);
-    assert!(res.culprits.contains(&50));
+    assert!(res.causes.len() > 1);
+    assert!(res.causes.contains(&50));
     assert_eq!(r.stats.executed, 5);
 
     let mut o = fails_if_all(vec![50]);
@@ -225,7 +225,7 @@ fn cached_results_are_not_run_again() {
     let mut o2 = |_: &Set| -> Outcome { panic!("oracle must not run when everything is cached") };
     let mut second = Runner::new(&mut o2).with_cache(cache);
     let res = ddmin(20, &NoClosure, &mut second).unwrap();
-    assert_eq!(res.culprits, vec![7, 8]);
+    assert_eq!(res.causes, vec![7, 8]);
     assert_eq!(second.stats.executed, 0);
 }
 
@@ -263,7 +263,7 @@ fn result_is_always_failing_and_one_minimal() {
         };
         let mut r = Runner::new(&mut o);
         let res = ddmin(n, &NoClosure, &mut r).unwrap();
-        let found = set(&res.culprits);
+        let found = set(&res.causes);
 
         assert!(fails(&found), "round {round}: {found:?} does not fail");
         for x in &found {
@@ -278,10 +278,10 @@ fn result_is_always_failing_and_one_minimal() {
 }
 
 mod find {
-    use whichdep::dd::{find_culprits, DepClosure, NoClosure, Outcome, Runner, Set, Verdict};
+    use whichdep::dd::{find_causes, DepClosure, NoClosure, Outcome, Runner, Set, Verdict};
 
     #[test]
-    fn one_culprit_is_confirmed_by_reverting_it() {
+    fn one_cause_is_confirmed_by_reverting_it() {
         let mut o = |s: &Set| {
             if s.contains(&42) {
                 Outcome::Fail
@@ -290,14 +290,14 @@ mod find {
             }
         };
         let mut r = Runner::new(&mut o);
-        let f = find_culprits(100, &NoClosure, &mut r, 5).unwrap();
+        let f = find_causes(100, &NoClosure, &mut r, 5).unwrap();
         assert_eq!(f.verdict, Verdict::Verified);
-        assert_eq!(f.culprits.len(), 1);
-        assert_eq!(f.culprits[0].units, vec![42]);
+        assert_eq!(f.causes.len(), 1);
+        assert_eq!(f.causes[0].units, vec![42]);
     }
 
     #[test]
-    fn independent_culprits_are_all_found() {
+    fn independent_causes_are_all_found() {
         let mut o = |s: &Set| {
             if s.contains(&10) || s.contains(&90) || (s.contains(&3) && s.contains(&4)) {
                 Outcome::Fail
@@ -306,15 +306,15 @@ mod find {
             }
         };
         let mut r = Runner::new(&mut o);
-        let f = find_culprits(100, &NoClosure, &mut r, 5).unwrap();
+        let f = find_causes(100, &NoClosure, &mut r, 5).unwrap();
         assert_eq!(f.verdict, Verdict::Verified);
-        let mut sets: Vec<Vec<usize>> = f.culprits.iter().map(|c| c.units.clone()).collect();
+        let mut sets: Vec<Vec<usize>> = f.causes.iter().map(|c| c.units.clone()).collect();
         sets.sort();
         assert_eq!(sets, vec![vec![3, 4], vec![10], vec![90]]);
     }
 
     #[test]
-    fn the_culprit_limit_leaves_the_verdict_incomplete() {
+    fn the_cause_limit_leaves_the_verdict_incomplete() {
         let mut o = |s: &Set| {
             if s.contains(&10) || s.contains(&90) {
                 Outcome::Fail
@@ -323,9 +323,9 @@ mod find {
             }
         };
         let mut r = Runner::new(&mut o);
-        let f = find_culprits(100, &NoClosure, &mut r, 1).unwrap();
+        let f = find_causes(100, &NoClosure, &mut r, 1).unwrap();
         assert_eq!(f.verdict, Verdict::Incomplete);
-        assert_eq!(f.culprits.len(), 1);
+        assert_eq!(f.causes.len(), 1);
     }
 
     #[test]
@@ -342,14 +342,14 @@ mod find {
             }
         };
         let mut r = Runner::new(&mut o);
-        let f = find_culprits(10, &NoClosure, &mut r, 5).unwrap();
-        assert_eq!(f.culprits[0].units, vec![5]);
+        let f = find_causes(10, &NoClosure, &mut r, 5).unwrap();
+        assert_eq!(f.causes[0].units, vec![5]);
         assert_eq!(f.verdict, Verdict::Unverified);
     }
 
     #[test]
-    fn reverting_a_culprit_also_reverts_what_requires_it() {
-        // 7 requires 8; 8 is the culprit. The revert check must drop 7 too,
+    fn reverting_a_cause_also_reverts_what_requires_it() {
+        // 7 requires 8; 8 is the cause. The revert check must drop 7 too,
         // otherwise it would propose a configuration that cannot exist.
         let closure = DepClosure::new(10, [(7, 8)], []);
         let mut o = |s: &Set| {
@@ -364,8 +364,8 @@ mod find {
             }
         };
         let mut r = Runner::new(&mut o);
-        let f = find_culprits(10, &closure, &mut r, 5).unwrap();
-        assert_eq!(f.culprits[0].units, vec![8]);
+        let f = find_causes(10, &closure, &mut r, 5).unwrap();
+        assert_eq!(f.causes[0].units, vec![8]);
         assert_eq!(f.verdict, Verdict::Verified);
     }
 
@@ -379,8 +379,39 @@ mod find {
             }
         };
         let mut r = Runner::new(&mut o).with_budget(Some(5));
-        let f = find_culprits(100, &NoClosure, &mut r, 5).unwrap();
+        let f = find_causes(100, &NoClosure, &mut r, 5).unwrap();
         assert_eq!(f.verdict, Verdict::Incomplete);
-        assert!(f.culprits[0].exhausted);
+        assert!(f.causes[0].exhausted);
+    }
+
+    #[test]
+    fn closure_chain_separates_root_from_required_companions() {
+        use whichdep::dd::Closure;
+        // 1 (rand) requires 2 (rand_chacha) and 0 (getrandom); 2 requires 3 (rand_core).
+        let closure = DepClosure::new(6, [(1, 2), (1, 0), (2, 3)], []);
+        let mut o = |s: &Set| {
+            if s.contains(&1) {
+                Outcome::Fail
+            } else {
+                Outcome::Pass
+            }
+        };
+        let mut r = Runner::new(&mut o);
+        let f = find_causes(6, &closure, &mut r, 5).unwrap();
+        assert_eq!(f.verdict, Verdict::Verified);
+        assert_eq!(f.causes.len(), 1);
+        assert_eq!(f.causes[0].units, vec![0, 1, 2, 3]);
+        assert_eq!(f.causes[0].roots, vec![1]);
+        assert_eq!(f.causes[0].companions(), vec![0, 2, 3]);
+        assert!(!f.causes[0].is_interaction());
+
+        // Cycle + independent node: A(0) <-> B(1), C(2) independent -> all 3 are roots.
+        let cyclic = DepClosure::new(4, [(0, 1), (1, 0)], []);
+        let s: Set = [0, 1, 2].into_iter().collect();
+        assert_eq!(cyclic.roots(&s), vec![0, 1, 2]);
+
+        // Root leading into a cycle: A(0) -> B(1) <-> C(2) -> only A(0) is root.
+        let into_cycle = DepClosure::new(4, [(0, 1), (1, 2), (2, 1)], []);
+        assert_eq!(into_cycle.roots(&s), vec![0]);
     }
 }

@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to attach binaries to (e.g. v0.0.2)"
+        description: "Release tag to attach binaries to (e.g. v0.0.1)"
         required: false
         default: ""
 
@@ -22,12 +22,19 @@ jobs:
         include:
           - runner: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            ext: ""
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            ext: ""
           - runner: macos-latest
             target: aarch64-apple-darwin
+            ext: ""
           - runner: macos-latest
             target: x86_64-apple-darwin
+            ext: ""
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: ".exe"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -36,13 +43,15 @@ jobs:
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
       - name: Package tarball
+        shell: bash
         env:
           TARGET: ${{ matrix.target }}
+          EXT: ${{ matrix.ext }}
         run: |
           set -euo pipefail
           VERSION="$(awk -F'"' '/^version =/{print $2; exit}' Cargo.toml)"
           mkdir -p dist
-          tar -czf "dist/whichdep-v${VERSION}-${TARGET}.tar.gz" -C "target/${TARGET}/release" whichdep
+          tar -czf "dist/whichdep-v${VERSION}-${TARGET}.tar.gz" -C "target/${TARGET}/release" "whichdep${EXT}"
       - uses: actions/upload-artifact@v4
         with:
           name: bin-${{ matrix.target }}
@@ -92,10 +101,6 @@ jobs:
           cp README.md npm/README.md
           cp LICENSE npm/LICENSE
           chmod +x npm/bin/whichdep.js npm/bin/install.js
-      - name: Update npm for Trusted Publishing
-        run: npm install -g npm@latest
-      - name: Show npm version
-        run: npm --version
       - name: Publish to npm via Trusted Publishing
         working-directory: npm
         run: npm publish --provenance --access public

@@ -2,7 +2,7 @@
 //! pluggable search strategies, and persistent store inspection).
 
 use std::path::Path;
-use whichdep::dd::{Culprit, DdError, Findings, Runner, Verdict};
+use whichdep::dd::{Cause, DdError, Findings, Runner, Verdict};
 use whichdep::{
     Adapter, AdapterRegistry, Change, Closure, DepClosure, Diagnosis, Ecosystem, Engine,
     Experiment, ExperimentStore, NoClosure, Oracle, Outcome, SearchStrategy, Set, Snapshot,
@@ -68,12 +68,13 @@ fn public_library_api_supports_custom_strategy_and_store_inspection() {
             _n: usize,
             _closure: &C,
             runner: &mut Runner<'_, O>,
-            _max_culprits: usize,
+            _max_causes: usize,
         ) -> Result<Findings, DdError> {
             let _ = runner.run(&[0].into_iter().collect());
             Ok(Findings {
-                culprits: vec![Culprit {
+                causes: vec![Cause {
                     units: vec![0],
+                    roots: vec![0],
                     exhausted: false,
                 }],
                 verdict: Verdict::Verified,

@@ -4,7 +4,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -58,8 +58,52 @@ fn kill_group(pid: u32) {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn kill_group(pid: u32) {
+    // Best-effort process-tree termination on Windows without external crates.
+    let _ = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[cfg(not(any(unix, windows)))]
 fn kill_group(_pid: u32) {}
+
+/// Prepend `dir` to the current process `PATH` using the platform separator
+/// (`:` on Unix, `;` on Windows).
+pub(crate) fn prepend_path(dir: &Path) -> String {
+    let mut paths = vec![dir.to_path_buf()];
+    if let Some(existing) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing));
+    }
+    std::env::join_paths(&paths)
+        .map(|os| os.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| {
+            let sep = if cfg!(windows) { ";" } else { ":" };
+            let cur = std::env::var("PATH").unwrap_or_default();
+            if cur.is_empty() {
+                dir.display().to_string()
+            } else {
+                format!("{}{sep}{cur}", dir.display())
+            }
+        })
+}
+
+/// Platform-appropriate virtual-environment executable directory
+/// (`Scripts` on Windows, `bin` on Unix).
+pub(crate) fn venv_bin_dir(venv: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        venv.join("Scripts")
+    }
+    #[cfg(not(windows))]
+    {
+        venv.join("bin")
+    }
+}
 
 fn pump<R: Read + Send + 'static>(mut src: R, log: Arc<Mutex<File>>, echo: bool) -> JoinHandle<()> {
     thread::spawn(move || {

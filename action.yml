@@ -54,8 +54,8 @@ inputs:
     description: "Maximum number of trials"
     required: false
     default: ""
-  max-culprits:
-    description: "Maximum number of independent culprits to isolate"
+  max-causes:
+    description: "Maximum number of independent causes to isolate"
     required: false
     default: "5"
   post-comment:
@@ -127,7 +127,7 @@ runs:
         INPUT_REPEAT: ${{ inputs.repeat }}
         INPUT_TIMEOUT: ${{ inputs.timeout }}
         INPUT_MAX_TRIALS: ${{ inputs.max-trials }}
-        INPUT_MAX_CULPRITS: ${{ inputs.max-culprits }}
+        INPUT_MAX_CAUSES: ${{ inputs.max-causes }}
         BASE_REF: ${{ github.base_ref }}
       run: |
         set -euo pipefail
@@ -144,7 +144,7 @@ runs:
         COMMENT_MD="${RUNNER_TEMP:-/tmp}/whichdep-comment.md"
         REPORT_HTML="${RUNNER_TEMP:-/tmp}/whichdep-report.html"
 
-        ARGS=(--good "$GOOD_REF" --strategy "$INPUT_STRATEGY" --repeat "$INPUT_REPEAT" --max-culprits "$INPUT_MAX_CULPRITS" --format json --out "$REPORT_JSON" --github-summary)
+        ARGS=(--good "$GOOD_REF" --strategy "$INPUT_STRATEGY" --repeat "$INPUT_REPEAT" --max-causes "$INPUT_MAX_CAUSES" --format json --out "$REPORT_JSON" --github-summary)
         [ -n "$INPUT_BAD" ] && ARGS+=(--bad "$INPUT_BAD")
         [ -n "$INPUT_LOCKFILE" ] && ARGS+=(--lockfile "$INPUT_LOCKFILE")
         [ -n "$INPUT_ECOSYSTEM" ] && ARGS+=(--ecosystem "$INPUT_ECOSYSTEM")

@@ -29,6 +29,15 @@ pub trait Closure {
     fn up(&self, s: &Set) -> Set;
     fn down(&self, s: &Set) -> Set;
 
+    /// Top-level units in `s` that no other unit in `s` requires.
+    ///
+    /// Used to distinguish a genuine multi-package interaction (multiple roots)
+    /// from a single root change that pulled in required companion updates
+    /// through the closure.
+    fn roots(&self, s: &Set) -> Vec<usize> {
+        s.iter().copied().collect()
+    }
+
     /// Stable identity for persistent trial-cache reuse. Custom closures
     /// should return `Some` only when the value fully captures their rules.
     /// The default deliberately disables persistent reuse for unknown rules.
@@ -149,6 +158,39 @@ impl Closure for DepClosure {
                 out.remove(&b);
             }
         }
+    }
+
+    fn roots(&self, s: &Set) -> Vec<usize> {
+        if s.is_empty() {
+            return Vec::new();
+        }
+        let required: Set = s
+            .iter()
+            .flat_map(|&u| self.requires[u].iter().copied())
+            .filter(|r| s.contains(r))
+            .collect();
+        let mut roots: Set = s
+            .iter()
+            .copied()
+            .filter(|u| !required.contains(u))
+            .collect();
+        // Guard against disconnected cycles within `s` (e.g. A <-> B) that
+        // have no in-degree-0 node.
+        let mut reachable = roots.clone();
+        let mut stack: Vec<usize> = roots.iter().copied().collect();
+        while let Some(x) = stack.pop() {
+            for &r in &self.requires[x] {
+                if s.contains(&r) && reachable.insert(r) {
+                    stack.push(r);
+                }
+            }
+        }
+        for &u in s {
+            if !reachable.contains(&u) {
+                roots.insert(u);
+            }
+        }
+        roots.into_iter().collect()
     }
 }
 
@@ -328,11 +370,11 @@ impl std::error::Error for DdError {}
 pub struct MinResult {
     /// The 1-minimal set of changes that still makes the test fail, sorted.
     /// Units that are part of the baseline (forced) are not included, units
-    /// that the culprits merely require are.
-    pub culprits: Vec<usize>,
+    /// that the causes merely require are.
+    pub causes: Vec<usize>,
     /// The closed configuration that was tested to fail.
     pub config: Set,
-    /// The trial budget ran out, so `culprits` may not be minimal yet.
+    /// The trial budget ran out, so `causes` may not be minimal yet.
     pub exhausted: bool,
 }
 
@@ -386,12 +428,13 @@ pub(crate) fn check_endpoints<O: Oracle, C: Closure>(
 
 /// Minimising delta debugging over `n` units.
 ///
-/// Finds a 1-minimal set of changes that still fails when applied to the
+/// Finds a 1-minimal closed set of changes that still fails when applied to the
 /// baseline: removing any single change (together with whatever then loses
 /// its requirements) makes the failure disappear or the configuration
 /// unresolvable. Because it minimises the *set* instead of looking for one
-/// flipping change, it reports interactions as they are: two packages that
-/// only break together come back as a pair.
+/// flipping change, two independent packages that only break together come back
+/// as a pair, while a change with closure dependencies comes back together with
+/// its required companions (distinguished via [`Cause::roots`]).
 ///
 /// Preconditions are checked with two trials, the baseline (must pass) and
 /// everything applied (must fail).
@@ -477,9 +520,9 @@ pub fn minimize<O: Oracle, C: Closure>(
         break;
     }
 
-    let culprits: Vec<usize> = cur.difference(&base).copied().collect();
+    let causes: Vec<usize> = cur.difference(&base).copied().collect();
     MinResult {
-        culprits,
+        causes,
         config: cur,
         exhausted,
     }
@@ -488,13 +531,13 @@ pub fn minimize<O: Oracle, C: Closure>(
 /// How far the explanation of the failure goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
-    /// Reverting the culprits in the bad state makes the test pass again, so
+    /// Reverting the causes in the bad state makes the test pass again, so
     /// together they explain the whole failure.
     Verified,
-    /// The state without the culprits could not be evaluated.
+    /// The state without the causes could not be evaluated.
     Unverified,
-    /// The state without the culprits still fails but the search stopped:
-    /// the trial budget or the culprit limit was reached.
+    /// The state without the causes still fails but the search stopped:
+    /// the trial budget or the cause limit was reached.
     Incomplete,
 }
 
@@ -510,34 +553,66 @@ impl Verdict {
 
 /// One independent explanation of the failure.
 #[derive(Debug, Clone)]
-pub struct Culprit {
+pub struct Cause {
     /// A 1-minimal set of changes that fails when applied to the baseline.
     pub units: Vec<usize>,
+    /// Top-level units in `units` that no other unit in `units` requires.
+    ///
+    /// When `roots.len() == 1` and `units.len() > 1`, the remaining units are
+    /// required companions pulled in by the closure rather than an independent
+    /// multi-package interaction.
+    pub roots: Vec<usize>,
     /// The budget ran out while minimising, so the set may not be minimal.
     pub exhausted: bool,
 }
 
+impl Cause {
+    pub fn from_units<C: Closure>(closure: &C, units: Vec<usize>, exhausted: bool) -> Self {
+        let set: Set = units.iter().copied().collect();
+        let roots = closure.roots(&set);
+        Self {
+            units,
+            roots,
+            exhausted,
+        }
+    }
+
+    /// Units in `units` that are pulled in as required companions of `roots`.
+    pub fn companions(&self) -> Vec<usize> {
+        self.units
+            .iter()
+            .copied()
+            .filter(|u| !self.roots.contains(u))
+            .collect()
+    }
+
+    /// True when multiple independent root changes are needed together.
+    pub fn is_interaction(&self) -> bool {
+        self.roots.len() > 1
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Findings {
-    pub culprits: Vec<Culprit>,
+    pub causes: Vec<Cause>,
     pub verdict: Verdict,
 }
 
 /// Finds every independent reason for the failure.
 ///
 /// Runs [`ddmin`], then reverts what it found in the bad configuration and
-/// tests that. If it passes the culprits explain the failure completely;
-/// if it still fails there is another, independent culprit and the search
-/// continues on what is left. At most `max_culprits` sets are collected.
-pub fn find_culprits<O: Oracle, C: Closure>(
+/// tests that. If it passes the causes explain the failure completely;
+/// if it still fails there is another, independent cause and the search
+/// continues on what is left. At most `max_causes` sets are collected.
+pub fn find_causes<O: Oracle, C: Closure>(
     n: usize,
     closure: &C,
     runner: &mut Runner<'_, O>,
-    max_culprits: usize,
+    max_causes: usize,
 ) -> Result<Findings, DdError> {
     let base = closure.up(&Set::new());
     let mut remaining = check_endpoints(n, closure, runner)?;
-    let mut culprits: Vec<Culprit> = Vec::new();
+    let mut causes: Vec<Cause> = Vec::new();
     let verdict = loop {
         let m = minimize(remaining.clone(), closure, runner);
         if runner.aborted() {
@@ -545,13 +620,10 @@ pub fn find_culprits<O: Oracle, C: Closure>(
         }
         let exhausted = m.exhausted;
         let mut next = remaining.clone();
-        for u in &m.culprits {
+        for u in &m.causes {
             next.remove(u);
         }
-        culprits.push(Culprit {
-            units: m.culprits,
-            exhausted,
-        });
+        causes.push(Cause::from_units(closure, m.causes, exhausted));
         if exhausted {
             break Verdict::Incomplete;
         }
@@ -565,12 +637,12 @@ pub fn find_culprits<O: Oracle, C: Closure>(
             Ok(Outcome::Pass) => break Verdict::Verified,
             Ok(Outcome::Unresolved) => break Verdict::Unverified,
             Ok(Outcome::Fail) => {
-                if culprits.len() >= max_culprits {
+                if causes.len() >= max_causes {
                     break Verdict::Incomplete;
                 }
                 remaining = next;
             }
         }
     };
-    Ok(Findings { culprits, verdict })
+    Ok(Findings { causes, verdict })
 }

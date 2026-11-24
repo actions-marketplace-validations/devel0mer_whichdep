@@ -590,7 +590,7 @@ fn experiment_metadata(experiment: &Experiment, closure_fingerprint: Option<&str
             "max_trials",
             experiment.max_trials.map_or(Json::Null, Json::int),
         ),
-        ("max_culprits", Json::int(experiment.max_culprits)),
+        ("max_causes", Json::int(experiment.max_causes)),
         ("units", Json::Arr(units)),
     ])
     .pretty()

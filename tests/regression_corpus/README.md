@@ -7,11 +7,17 @@ promoted to the corpus when it documents:
 2. the source/test reproducer and toolchain/environment metadata,
 3. an oracle command that passes on the good state and fails on the bad state,
 4. the upstream release/issue reference and maintainer-confirmed explanation,
-5. the expected culprit set and observed `whichdep` results.
+5. the expected cause set and observed `whichdep` results.
 
-## Reproduced cases
+## Live-registry synthetic validations
 
-### 1. Python / pip — `httpx 0.27.2 → 0.28.1` (`proxies=` removal)
+The cases below resolve real packages and real lockfiles from PyPI, npm, and
+crates.io for known upstream breaking releases, using minimal synthetic
+reproducer harnesses to validate end-to-end lockfile rewriting, closure
+handling, and verification. Full upstream repository reproductions (E1) are
+tracked separately below.
+
+### 1. Python (`pip` / `requirements.txt`) — `httpx 0.27.2 → 0.28.1` (`proxies=` removal)
 
 - **Upstream reference:** `encode/httpx` 0.28.0 (Nov 2024) removed the
   deprecated `proxies=` parameter from `httpx.Client`, breaking downstream
@@ -22,22 +28,66 @@ promoted to the corpus when it documents:
 - **Diff size:** 7 changes (6 updated, 1 removed: `sniffio` dropped by
   `httpx 0.28.1`).
 - **Observed result:**
-  - Isolated culprit: **`httpx 0.27.2 → 0.28.1`** (exact match).
+  - Isolated cause: **`httpx 0.27.2 → 0.28.1`** (exact match).
   - Pin hint: `httpx==0.27.2`.
   - Trials: **7 trials** (2 pass, 4 fail, 1 unresolved), wall time **36s**.
-  - **Key real-world finding:** Trial #7 (revert verification) returned
-    `unresolved` (`httpx 0.27.2 requires sniffio, which is not installed`)
-    because `pip freeze` omits `# via` comments, so `whichdep` honestly
-    reported `Not verified` instead of misblaming `sniffio`. In `v0.0.2`,
-    `PipPlan` added reverse `# via` closure edges for `Kind::Removed` so
-    `pip-compile` / `uv pip compile` lockfiles automatically restore removed
-    transitive dependencies on revert and reach `Verified`.
+  - **Key finding:** Trial #7 (revert verification) returned `unresolved`
+    (`httpx 0.27.2 requires sniffio, which is not installed`) because
+    `pip freeze` omits `# via` comments, so `whichdep` honestly reported
+    `Not verified` instead of misblaming `sniffio`. In `v0.0.2`, `PipPlan`
+    added reverse `# via` closure edges for `Kind::Removed` so `pip-compile` /
+    `uv pip compile` lockfiles automatically restore removed transitive
+    dependencies on revert and reach `Verified`.
 
-## Candidate cases to reproduce next
+### 2. Node.js (`npm` / `package-lock.json` v3) — `chalk 4.1.2 → 6.0.1` (CJS → ESM)
+
+- **Upstream reference:** `chalk` 5+/6+ dropped CommonJS `require("chalk")`
+  default export support in favor of pure ESM, breaking CJS consumers.
+- **Environment:** macOS arm64, Node.js + `npm ci --no-audit --no-fund
+  --prefer-offline`, `whichdep 0.0.2` via `npx -y whichdep@latest`,
+  `--strategy adaptive`, oracle `node test.js` (`const chalk = require("chalk");
+  chalk.green("ok")`).
+- **Diff size:** 14 changes (7 updated, 7 removed — including `chalk` 4's
+  transitive dependencies `ansi-styles`, `supports-color`, `color-convert`,
+  `color-name`, `has-flag`).
+- **Observed result:**
+  - Isolated cause: **`chalk 4.1.2 → 6.0.1`** (exact match).
+  - Verdict: **`Verified`** — reverting `chalk` automatically restored its
+    removed transitive dependencies via `NpmPlan`'s reverse closure, and
+    `npm ci` + `node test.js` passed in 567ms.
+  - Trials: **7 trials** (2 pass, 5 fail, **0 unresolved**), ~560–723ms per
+    trial, wall time **4.2s**.
+
+### 3. Rust (`cargo` / `Cargo.lock` v4) — `rand 0.8.5 → 0.9.5` (`thread_rng` deprecation under `-D warnings`)
+
+- **Upstream reference:** `rand` 0.9.0 (Jan 2025) deprecated `rand::thread_rng()`
+  in favor of `rand::rng()`, breaking Rust CI builds running with
+  `RUSTFLAGS="-D warnings"`.
+- **Environment:** macOS arm64, Rust stable, `RUSTFLAGS="-D warnings"`,
+  `whichdep 0.0.2` via `npx -y whichdep@latest`, `--strategy adaptive`,
+  oracle `cargo test -q`.
+- **Diff size:** 9 changes (9 updated crates from crates.io).
+- **Observed result:**
+  - Isolated coupled major-bump set: root **`rand 0.8.5 → 0.9.5`** with
+    required companions `getrandom 0.2.17 → 0.3.4`,
+    `rand_chacha 0.3.1 → 0.9.0`, `rand_core 0.6.4 → 0.9.5`.
+  - Verdict: **`Verified`** (reverting the coupled `rand` 0.9 group while
+    keeping the other 5 updated crates passed in 615ms).
+  - Trials: **6 trials** (2 pass, 4 fail, **0 unresolved**), warm incremental
+    trials **143–154ms**, total wall time **6.0s**.
+  - **Key finding:** On `v0.0.2`, this run exposed two UX issues — a closure
+    chain was labelled as a multi-package interaction and emitted per-companion
+    `cargo update` hints. Fixed in `v0.1.0` via `Closure::roots`, which
+    separates the root (`rand`) from required companion updates and emits only
+    `cargo update rand@0.9.5 --precise 0.8.5`. Also verified `RUSTFLAGS`
+    cache-key isolation and added a `-D warnings` hint when `BadPasses` sees
+    Cargo compiler warnings.
+
+## Upstream E1 cases to reproduce next (full repos)
 
 - [Bevy #12044](https://github.com/bevyengine/bevy/issues/12044): Bevy 0.12.1
   startup hang after fresh Cargo resolution selected `async-executor` 1.9.0.
 - [Synapse AI v1.8.6 release notes](https://github.com/synapseorch-ai/synapse-ai/releases/tag/v1.8.6):
   fresh installs broke after `mcp` 2.0.0 (`synapseorch-ai`, not Matrix's
   `matrix-org/synapse`).
-- Node (`package-lock.json` / `pnpm-lock.yaml`) real upstream breakage.
+- `uv.lock` and `pnpm-lock.yaml` live upstream reproductions.
