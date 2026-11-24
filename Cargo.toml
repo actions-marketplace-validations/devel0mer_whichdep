@@ -9,7 +9,7 @@ homepage = "https://github.com/devel0mer/whichdep"
 readme = "README.md"
 keywords = ["bisect", "delta-debugging", "dependencies", "lockfile", "regression"]
 categories = ["development-tools", "command-line-utilities"]
-exclude = ["npm/"]
+exclude = ["npm/", "assets/"]
 
 # Zero runtime dependencies on purpose: the prototype builds offline, starts
 # instantly and is easy to audit. clap/serde can come later if they earn it.
