@@ -20,6 +20,34 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
+/// Exclusive cross-process file lock backed by `std::fs::File::lock`
+/// (`flock` on Unix, `LockFileEx` on Windows). Released automatically on drop.
+pub struct StoreLock {
+    file: fs::File,
+}
+
+impl StoreLock {
+    pub fn acquire(path: &Path) -> io::Result<Self> {
+        if let Some(parent) = path.parent() {
+            create_private_dir(parent)?;
+        }
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        file.lock()?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for StoreLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ExperimentStore {
     root: PathBuf,
@@ -85,12 +113,18 @@ impl ExperimentStore {
         Ok(dir)
     }
 
+    fn lock_experiment(&self, id: &str) -> io::Result<StoreLock> {
+        let dir = self.experiment_dir(id)?;
+        StoreLock::acquire(&dir.join(".lock"))
+    }
+
     /// Return cached Pass/Fail outcomes for the exact experiment namespace.
     pub fn load_cache(
         &self,
         experiment_id: &str,
         namespace: &str,
     ) -> io::Result<HashMap<Vec<usize>, Outcome>> {
+        let _guard = self.lock_experiment(experiment_id)?;
         let dir = self.trials_dir(experiment_id)?;
         let mut cache = HashMap::new();
         for entry in fs::read_dir(dir)? {
@@ -147,6 +181,17 @@ impl ExperimentStore {
     /// path used by the engine's trial callback, so a process interruption does
     /// not discard earlier completed work.
     pub fn save_trial(
+        &self,
+        experiment_id: &str,
+        namespace: &str,
+        config: &[usize],
+        outcome: Outcome,
+    ) -> io::Result<()> {
+        let _guard = self.lock_experiment(experiment_id)?;
+        self.save_trial_unlocked(experiment_id, namespace, config, outcome)
+    }
+
+    fn save_trial_unlocked(
         &self,
         experiment_id: &str,
         namespace: &str,
@@ -222,8 +267,9 @@ impl ExperimentStore {
         namespace: &str,
         cache: &HashMap<Vec<usize>, Outcome>,
     ) -> io::Result<()> {
+        let _guard = self.lock_experiment(experiment_id)?;
         for (config, outcome) in cache {
-            self.save_trial(experiment_id, namespace, config, *outcome)?;
+            self.save_trial_unlocked(experiment_id, namespace, config, *outcome)?;
         }
         Ok(())
     }
@@ -236,6 +282,7 @@ impl ExperimentStore {
         experiment: &Experiment,
         closure_fingerprint: Option<&str>,
     ) -> io::Result<()> {
+        let _guard = self.lock_experiment(&experiment.id)?;
         let dir = self.experiment_dir(&experiment.id)?;
         let metadata = experiment_metadata(experiment, closure_fingerprint);
         write_atomic_replace(&dir.join("experiment.json"), metadata.as_bytes())
@@ -248,6 +295,7 @@ impl ExperimentStore {
         diagnosis: &Diagnosis,
         closure_fingerprint: Option<&str>,
     ) -> io::Result<PathBuf> {
+        let _guard = self.lock_experiment(&experiment.id)?;
         let dir = self.experiment_dir(&experiment.id)?;
         let runs = dir.join("runs");
         create_private_dir(&runs)?;
@@ -712,6 +760,57 @@ mod tests {
         let root = temp_root();
         let store = ExperimentStore::open(&root).unwrap();
         assert!(store.load_cache("../escape", "x").is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn concurrent_writers_do_not_corrupt_store_or_history() {
+        use crate::model::{Change, Snapshot};
+        let root = temp_root();
+        let store = ExperimentStore::open(&root).unwrap();
+        let exp = Experiment::new(
+            "concurrent-exp",
+            "parallel ci stress test",
+            "cargo",
+            Snapshot::new("good", "g"),
+            Snapshot::new("bad", "b"),
+            vec![Change {
+                name: "a".into(),
+                from: vec!["1".into()],
+                to: vec!["2".into()],
+            }],
+            "oracle-v1",
+        );
+
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let s = store.clone();
+                let e = exp.clone();
+                std::thread::spawn(move || {
+                    s.save_trial("concurrent-exp", "ns-1", &[i], Outcome::Pass)
+                        .unwrap();
+                    let _ = s.load_cache("concurrent-exp", "ns-1").unwrap();
+                    let diag = Diagnosis::from_search(
+                        "concurrent-exp",
+                        Err(crate::dd::DdError::NothingToBisect),
+                        Vec::new(),
+                        1,
+                        0,
+                        0.01,
+                    );
+                    s.save_run(&e, &diag, Some("no-closure-v1")).unwrap();
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+        let cache = store.load_cache("concurrent-exp", "ns-1").unwrap();
+        assert_eq!(cache.len(), 8);
+        assert_eq!(store.history("concurrent-exp").unwrap().len(), 8);
+        let log = fs::read_to_string(root.join("experiments/concurrent-exp/history.log")).unwrap();
+        assert_eq!(log.lines().count(), 8);
         let _ = fs::remove_dir_all(root);
     }
 }

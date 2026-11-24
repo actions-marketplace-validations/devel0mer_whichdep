@@ -56,9 +56,18 @@ whichdep history --html --out dashboard.html
 whichdep clean --build-only
 ```
 
-### GitHub Action
+### GitHub Action & Security Model
 
 See [action.yml](../action.yml) and [.github/workflows/whichdep-dependabot.yml](../.github/workflows/whichdep-dependabot.yml).
+
+> **Security Warning (Threat Model):**
+> `whichdep` isolates project files per trial, **not** OS permissions, environment variables, or network access. During a Dependabot/Renovate PR, untrusted dependency updates execute arbitrary code (`build.rs`, proc-macros, `postinstall` scripts, Python build hooks, and your test suite) as the CI runner user.
+>
+> - **Never** expose production secrets, deploy keys, or registry publish tokens to a CI job that runs `whichdep`.
+> - **Never** run `whichdep` under `pull_request_target` on untrusted fork PRs.
+> - **Prefer the two-job pattern** shown in [whichdep-dependabot.yml](../.github/workflows/whichdep-dependabot.yml): run `whichdep` with `permissions: contents: read` and `post-comment: "false"`, upload `whichdep-comment.md` as an artifact, and post the sticky PR comment from a separate job that does not check out PR code.
+> - For Node ecosystems where lifecycle scripts are not required for tests, consider overriding `--prepare "npm ci --ignore-scripts --no-audit --no-fund --prefer-offline"`.
+> - **Concurrent CI safety:** `ExperimentStore` and shared build caches use OS-level exclusive file locks (`std::fs::File::lock`) so parallel runs sharing `WHICHDEP_HOME` on self-hosted runners do not corrupt trial caches or `history.log`.
 
 ### Web Dashboard Foundation
 

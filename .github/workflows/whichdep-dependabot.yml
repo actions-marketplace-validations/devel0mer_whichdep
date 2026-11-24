@@ -1,5 +1,14 @@
 # Example workflow: automatically bisect failing dependency-update PRs
 # (Dependabot / Renovate) and post a sticky whichdep report on the PR.
+#
+# SECURITY MODEL:
+# Trial commands execute untrusted dependency code (`build.rs`, `postinstall`,
+# tests) as the runner user — NOT inside an OS sandbox. This workflow splits
+# execution into two jobs:
+#   1. `test-and-bisect` runs with read-only permissions (`contents: read`) and
+#      NO production secrets, uploading the rendered report as an artifact.
+#   2. `comment-pr` runs with `pull-requests: write` WITHOUT checking out PR
+#      code, reading only the generated comment artifact to update the PR.
 name: whichdep-dependency-bisect
 
 on:
@@ -13,11 +22,15 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   test-and-bisect:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      failed: ${{ steps.suite.outcome == 'failure' }}
+      has_comment: ${{ steps.whichdep.outputs.comment-markdown != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,18 +51,51 @@ jobs:
           good: origin/${{ github.base_ref }}
           strategy: adaptive
           test-command: cargo test
+          repeat: "3"
           max-trials: "25"
-          post-comment: "true"
+          post-comment: "false"
 
-      - name: Upload HTML regression report
-        if: steps.suite.outcome == 'failure' && steps.whichdep.outputs.html-report != ''
+      - name: Upload regression report artifacts
+        if: steps.suite.outcome == 'failure' && steps.whichdep.outputs.report-json != ''
         uses: actions/upload-artifact@v4
         with:
           name: whichdep-report
           path: |
             ${{ steps.whichdep.outputs.report-json }}
+            ${{ steps.whichdep.outputs.comment-markdown }}
             ${{ steps.whichdep.outputs.html-report }}
 
       - name: Fail job when original test suite failed
         if: steps.suite.outcome == 'failure'
         run: exit 1
+
+  comment-pr:
+    needs: [test-and-bisect]
+    if: always() && needs.test-and-bisect.outputs.failed == 'true' && needs.test-and-bisect.outputs.has_comment == 'true' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: whichdep-report
+          path: report
+
+      - name: Upsert sticky PR comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          COMMENT_MD="report/whichdep-comment.md"
+          if [ ! -f "$COMMENT_MD" ]; then
+            exit 0
+          fi
+          EXISTING_ID="$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
+            --jq '.[] | select(.body | contains("<!-- whichdep-report -->")) | .id' | head -n 1 || true)"
+          if [ -n "$EXISTING_ID" ]; then
+            gh api --method PATCH "repos/$REPO/issues/comments/$EXISTING_ID" -F "body=@$COMMENT_MD" >/dev/null
+          else
+            gh api --method POST "repos/$REPO/issues/$PR_NUMBER/comments" -F "body=@$COMMENT_MD" >/dev/null
+          fi

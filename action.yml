@@ -1,3 +1,13 @@
+# SECURITY NOTICE:
+# `whichdep` isolates project files per trial, NOT OS permissions or network.
+# Every trial executes package installation (`build.rs`, `postinstall`, wheel
+# builds) and your `test-command` as the CI runner user.
+#   - Never pass production secrets or deploy tokens to a job running `whichdep`.
+#   - Never run `whichdep` under `pull_request_target` on untrusted fork PRs.
+#   - For strictest token isolation, set `post-comment: "false"` in a read-only
+#     bisect job, upload `comment-markdown` as an artifact, and post the sticky
+#     comment from a separate job that does not check out PR code (see
+#     `.github/workflows/whichdep-dependabot.yml`).
 name: "whichdep — Dependency Regression Bisector"
 description: "Isolate which dependency update in a lockfile diff broke CI and post a verified sticky PR comment."
 branding:

@@ -291,24 +291,46 @@ impl PipPlan {
             }
         }
 
-        // A changed parent that `# via` names as the reason for a newly added
-        // package requires that added package to come along with it.
+        // Closure edges derived from `# via` comments (pip-compile / uv pip compile):
+        // 1. A changed parent named by `# via` for a newly added package requires
+        //    that added package to come along with it (`parent -> added_child`).
+        // 2. A removed package whose `good` `# via` names a changed/removed parent
+        //    cannot be removed unless that parent change is also applied
+        //    (`removed_child -> parent`). That way, reverting the parent during
+        //    verification automatically restores the removed transitive dependency
+        //    (e.g. reverting `httpx 0.28.1 -> 0.27.2` restores `sniffio`).
         let mut edges = Vec::new();
         for (ci, c) in units.iter().enumerate() {
-            if c.kind != Kind::Added {
-                continue;
-            }
-            let child = &bad.reqs[c.bad.unwrap()];
-            for parent in &child.via {
-                for (pi, p) in units.iter().enumerate() {
-                    if pi == ci || p.kind == Kind::Removed {
-                        continue;
-                    }
-                    let pr = &bad.reqs[p.bad.unwrap()];
-                    if normalize(&pr.name) == *parent {
-                        edges.push((pi, ci));
+            match c.kind {
+                Kind::Added => {
+                    let child = &bad.reqs[c.bad.unwrap()];
+                    for parent in &child.via {
+                        for (pi, p) in units.iter().enumerate() {
+                            if pi == ci || p.kind == Kind::Removed {
+                                continue;
+                            }
+                            let pr = &bad.reqs[p.bad.unwrap()];
+                            if normalize(&pr.name) == *parent {
+                                edges.push((pi, ci));
+                            }
+                        }
                     }
                 }
+                Kind::Removed => {
+                    let child = &good.reqs[c.good.unwrap()];
+                    for parent in &child.via {
+                        for (pi, p) in units.iter().enumerate() {
+                            if pi == ci || p.kind == Kind::Added {
+                                continue;
+                            }
+                            let pr = &good.reqs[p.good.unwrap()];
+                            if normalize(&pr.name) == *parent {
+                                edges.push((ci, pi));
+                            }
+                        }
+                    }
+                }
+                Kind::Updated => {}
             }
         }
         let closure = DepClosure::new(units.len(), edges, []);
@@ -516,6 +538,31 @@ delta==0.5.0
         assert_eq!(p.changes().len(), 1);
         assert_eq!(p.changes()[0].describe(), "beta 2.0.0 -> 2.1.0");
         assert_eq!(p.pin_hint(0).as_deref(), Some("beta==2.0.0"));
+    }
+
+    #[test]
+    fn reverting_a_parent_restores_its_removed_transitive_dependency() {
+        // Real-world pattern observed in httpx 0.27.2 -> 0.28.1, which dropped sniffio.
+        let good = "httpx==0.27.2\n    # via -r requirements.in\nsniffio==1.3.1\n    # via httpx\nrich==13.8.0\n";
+        let bad = "httpx==0.28.1\n    # via -r requirements.in\nrich==13.9.4\n";
+        let p = PipPlan::new("requirements.txt", good, bad).unwrap();
+        let httpx = idx(&p, "httpx");
+        let sniffio = idx(&p, "sniffio");
+        let rich = idx(&p, "rich");
+
+        // Removing sniffio requires applying httpx's upgrade.
+        assert_eq!(
+            p.closure().up(&[sniffio].into_iter().collect()),
+            [httpx, sniffio].into_iter().collect()
+        );
+        // Reverting httpx from the full bad state also drops the sniffio-removal
+        // unit via `down()`, restoring sniffio==1.3.1 in the rendered lockfile.
+        let without_httpx = p.closure().down(&[sniffio, rich].into_iter().collect());
+        assert_eq!(without_httpx, [rich].into_iter().collect());
+        let rendered = p.render(&without_httpx);
+        assert!(rendered.contains("httpx==0.27.2"));
+        assert!(rendered.contains("sniffio==1.3.1"));
+        assert!(rendered.contains("rich==13.9.4"));
     }
 
     #[test]

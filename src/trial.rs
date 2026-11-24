@@ -7,6 +7,7 @@ use crate::dd::{Oracle, Outcome, Set};
 use crate::exec::{self, Spec, Status};
 use crate::fingerprint;
 use crate::model::Ecosystem;
+use crate::store::StoreLock;
 use crate::ui::{self, Ui};
 use crate::workspace;
 use std::collections::HashMap;
@@ -221,6 +222,15 @@ impl<'a> Trials<'a> {
                 build_cache.display()
             ));
         }
+        let _cache_lock = match StoreLock::acquire(&build_cache.join(".lock")) {
+            Ok(guard) => guard,
+            Err(e) => {
+                return self.fatal_err(format!(
+                    "cannot acquire build cache lock {}: {e}",
+                    build_cache.display()
+                ));
+            }
+        };
         let env = self.env(no, workdir, &build_cache);
         let echo = self.settings.verbose;
 
