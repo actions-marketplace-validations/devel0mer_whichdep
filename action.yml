@@ -1,0 +1,189 @@
+name: "whichdep — Dependency Regression Bisector"
+description: "Isolate which dependency update in a lockfile diff broke CI and post a verified sticky PR comment."
+branding:
+  icon: "search"
+  color: "orange"
+
+inputs:
+  good:
+    description: "Known-good git revision or lockfile path (defaults to origin/<base_ref>)"
+    required: false
+    default: ""
+  bad:
+    description: "Failing git revision or lockfile path (defaults to working tree)"
+    required: false
+    default: ""
+  lockfile:
+    description: "Relative path to the lockfile (auto-detected if omitted)"
+    required: false
+    default: ""
+  ecosystem:
+    description: "Ecosystem override: cargo | uv | pip | npm | pnpm"
+    required: false
+    default: ""
+  strategy:
+    description: "Search strategy: ddmin | bisect | adaptive | one-by-one"
+    required: false
+    default: "adaptive"
+  test-command:
+    description: "Shell command used as the pass/fail oracle (exit 0 = pass, 125 = skip, other = fail)"
+    required: true
+  prepare:
+    description: "Optional prepare script override (`none` skips built-in setup)"
+    required: false
+    default: ""
+  repeat:
+    description: "Run the test command N times per trial to detect flakiness"
+    required: false
+    default: "1"
+  timeout:
+    description: "Per-test-run timeout in seconds"
+    required: false
+    default: ""
+  max-trials:
+    description: "Maximum number of trials"
+    required: false
+    default: ""
+  max-culprits:
+    description: "Maximum number of independent culprits to isolate"
+    required: false
+    default: "5"
+  post-comment:
+    description: "Upsert a sticky PR comment when running on a pull request"
+    required: false
+    default: "true"
+  github-token:
+    description: "GitHub token with pull-requests: write permission for PR comments"
+    required: false
+    default: ${{ github.token }}
+  whichdep-bin:
+    description: "Optional path to an already installed whichdep binary"
+    required: false
+    default: ""
+
+outputs:
+  status:
+    description: "Machine-readable status: found | no-result | error"
+    value: ${{ steps.bisect.outputs.status }}
+  verdict:
+    description: "Verification verdict: verified | unverified | incomplete"
+    value: ${{ steps.bisect.outputs.verdict }}
+  experiment-id:
+    description: "Persistent experiment identifier"
+    value: ${{ steps.bisect.outputs.experiment_id }}
+  report-json:
+    description: "Path to the whichdep-report-v2 JSON file"
+    value: ${{ steps.bisect.outputs.report_json }}
+  comment-markdown:
+    description: "Path to the sticky PR comment Markdown file"
+    value: ${{ steps.bisect.outputs.comment_markdown }}
+  html-report:
+    description: "Path to the self-contained HTML report file"
+    value: ${{ steps.bisect.outputs.html_report }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Resolve or build whichdep binary
+      id: bin
+      shell: bash
+      env:
+        INPUT_BIN: ${{ inputs.whichdep-bin }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        if [ -n "$INPUT_BIN" ]; then
+          BIN="$INPUT_BIN"
+        elif command -v whichdep >/dev/null 2>&1; then
+          BIN="$(command -v whichdep)"
+        else
+          cargo build --release --manifest-path "$ACTION_PATH/Cargo.toml"
+          BIN="$ACTION_PATH/target/release/whichdep"
+        fi
+        echo "path=$BIN" >> "$GITHUB_OUTPUT"
+
+    - name: Run whichdep bisection
+      id: bisect
+      shell: bash
+      env:
+        WHICHDEP_BIN: ${{ steps.bin.outputs.path }}
+        INPUT_GOOD: ${{ inputs.good }}
+        INPUT_BAD: ${{ inputs.bad }}
+        INPUT_LOCKFILE: ${{ inputs.lockfile }}
+        INPUT_ECOSYSTEM: ${{ inputs.ecosystem }}
+        INPUT_STRATEGY: ${{ inputs.strategy }}
+        INPUT_TEST_CMD: ${{ inputs.test-command }}
+        INPUT_PREPARE: ${{ inputs.prepare }}
+        INPUT_REPEAT: ${{ inputs.repeat }}
+        INPUT_TIMEOUT: ${{ inputs.timeout }}
+        INPUT_MAX_TRIALS: ${{ inputs.max-trials }}
+        INPUT_MAX_CULPRITS: ${{ inputs.max-culprits }}
+        BASE_REF: ${{ github.base_ref }}
+      run: |
+        set -euo pipefail
+        GOOD_REF="$INPUT_GOOD"
+        if [ -z "$GOOD_REF" ]; then
+          if [ -n "$BASE_REF" ]; then
+            GOOD_REF="origin/$BASE_REF"
+          else
+            GOOD_REF="HEAD~1"
+          fi
+        fi
+
+        REPORT_JSON="${RUNNER_TEMP:-/tmp}/whichdep-report.json"
+        COMMENT_MD="${RUNNER_TEMP:-/tmp}/whichdep-comment.md"
+        REPORT_HTML="${RUNNER_TEMP:-/tmp}/whichdep-report.html"
+
+        ARGS=(--good "$GOOD_REF" --strategy "$INPUT_STRATEGY" --repeat "$INPUT_REPEAT" --max-culprits "$INPUT_MAX_CULPRITS" --format json --out "$REPORT_JSON" --github-summary)
+        [ -n "$INPUT_BAD" ] && ARGS+=(--bad "$INPUT_BAD")
+        [ -n "$INPUT_LOCKFILE" ] && ARGS+=(--lockfile "$INPUT_LOCKFILE")
+        [ -n "$INPUT_ECOSYSTEM" ] && ARGS+=(--ecosystem "$INPUT_ECOSYSTEM")
+        [ -n "$INPUT_PREPARE" ] && ARGS+=(--prepare "$INPUT_PREPARE")
+        [ -n "$INPUT_TIMEOUT" ] && ARGS+=(--timeout "$INPUT_TIMEOUT")
+        [ -n "$INPUT_MAX_TRIALS" ] && ARGS+=(--max-trials "$INPUT_MAX_TRIALS")
+
+        set +e
+        "$WHICHDEP_BIN" "${ARGS[@]}" -- sh -c "$INPUT_TEST_CMD" >/dev/null
+        EXIT_CODE=$?
+        set -e
+
+        if [ -f "$REPORT_JSON" ]; then
+          "$WHICHDEP_BIN" format --input "$REPORT_JSON" --format github-comment --out "$COMMENT_MD" >/dev/null
+          "$WHICHDEP_BIN" format --input "$REPORT_JSON" --format html --out "$REPORT_HTML" >/dev/null
+          STATUS="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("status",""))' "$REPORT_JSON")"
+          VERDICT="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("verdict") or "")' "$REPORT_JSON")"
+          EXP_ID="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("experiment_id") or "")' "$REPORT_JSON")"
+        else
+          STATUS="error"
+          VERDICT=""
+          EXP_ID=""
+        fi
+
+        echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+        echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+        echo "experiment_id=$EXP_ID" >> "$GITHUB_OUTPUT"
+        echo "report_json=$REPORT_JSON" >> "$GITHUB_OUTPUT"
+        echo "comment_markdown=$COMMENT_MD" >> "$GITHUB_OUTPUT"
+        echo "html_report=$REPORT_HTML" >> "$GITHUB_OUTPUT"
+        echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+
+    - name: Upsert sticky PR comment
+      if: inputs.post-comment == 'true' && github.event.pull_request.number != '' && steps.bisect.outputs.comment_markdown != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        COMMENT_MD: ${{ steps.bisect.outputs.comment_markdown }}
+      run: |
+        set -euo pipefail
+        if [ ! -f "$COMMENT_MD" ]; then
+          exit 0
+        fi
+        EXISTING_ID="$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
+          --jq '.[] | select(.body | contains("<!-- whichdep-report -->")) | .id' | head -n 1 || true)"
+        if [ -n "$EXISTING_ID" ]; then
+          gh api --method PATCH "repos/$REPO/issues/comments/$EXISTING_ID" -F "body=@$COMMENT_MD" >/dev/null
+        else
+          gh api --method POST "repos/$REPO/issues/$PR_NUMBER/comments" -F "body=@$COMMENT_MD" >/dev/null
+        fi

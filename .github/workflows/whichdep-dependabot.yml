@@ -1,0 +1,55 @@
+# Example workflow: automatically bisect failing dependency-update PRs
+# (Dependabot / Renovate) and post a sticky whichdep report on the PR.
+name: whichdep-dependency-bisect
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.lock"
+      - "uv.lock"
+      - "requirements*.txt"
+      - "package-lock.json"
+      - "pnpm-lock.yaml"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  test-and-bisect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run normal test suite
+        id: suite
+        continue-on-error: true
+        run: cargo test
+
+      - name: Bisect failing dependency update with whichdep
+        if: steps.suite.outcome == 'failure'
+        id: whichdep
+        uses: ./
+        with:
+          good: origin/${{ github.base_ref }}
+          strategy: adaptive
+          test-command: cargo test
+          max-trials: "25"
+          post-comment: "true"
+
+      - name: Upload HTML regression report
+        if: steps.suite.outcome == 'failure' && steps.whichdep.outputs.html-report != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: whichdep-report
+          path: |
+            ${{ steps.whichdep.outputs.report-json }}
+            ${{ steps.whichdep.outputs.html-report }}
+
+      - name: Fail job when original test suite failed
+        if: steps.suite.outcome == 'failure'
+        run: exit 1

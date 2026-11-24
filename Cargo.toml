@@ -1,0 +1,29 @@
+[package]
+name = "whichdep"
+version = "0.0.1"
+edition = "2021"
+description = "Find which dependency update broke your build: delta debugging over lockfile changes"
+license = "Apache-2.0"
+repository = "https://github.com/devel0mer/whichdep"
+homepage = "https://github.com/devel0mer/whichdep"
+readme = "README.md"
+keywords = ["bisect", "delta-debugging", "dependencies", "lockfile", "regression"]
+categories = ["development-tools", "command-line-utilities"]
+
+# Zero runtime dependencies on purpose: the prototype builds offline, starts
+# instantly and is easy to audit. clap/serde can come later if they earn it.
+[dependencies]
+
+[lib]
+name = "whichdep"
+path = "src/lib.rs"
+
+[[bin]]
+name = "whichdep"
+path = "src/main.rs"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
