@@ -18,6 +18,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
+use std::sync::RwLock;
 
 pub use crate::oracle::{Oracle, Outcome, Set};
 
@@ -64,7 +65,7 @@ impl Closure for NoClosure {
 /// "a requires b" edges plus a set of units that are part of every
 /// configuration (including the baseline).
 pub struct DepClosure {
-    requires: Vec<Vec<usize>>,
+    requires: RwLock<Vec<Vec<usize>>>,
     forced: Set,
 }
 
@@ -93,13 +94,24 @@ impl DepClosure {
             }
         }
         DepClosure {
-            requires: req,
+            requires: RwLock::new(req),
             forced,
         }
     }
 
-    pub fn requires_of(&self, i: usize) -> &[usize] {
-        &self.requires[i]
+    /// Dynamically add a learned dependency edge `a -> b` ("applying `a` requires `b`").
+    /// Returns `true` if the edge was newly added.
+    pub fn add_edge(&self, a: usize, b: usize) -> bool {
+        let mut req = self.requires.write().unwrap();
+        if a >= req.len() || b >= req.len() || a == b || req[a].contains(&b) {
+            return false;
+        }
+        req[a].push(b);
+        true
+    }
+
+    pub fn requires_of(&self, i: usize) -> Vec<usize> {
+        self.requires.read().unwrap()[i].clone()
     }
 
     pub fn forced(&self) -> &Set {
@@ -109,8 +121,9 @@ impl DepClosure {
 
 impl Closure for DepClosure {
     fn cache_fingerprint(&self) -> Option<String> {
+        let req = self.requires.read().unwrap();
         let mut edges = Vec::new();
-        for (from, dependencies) in self.requires.iter().enumerate() {
+        for (from, dependencies) in req.iter().enumerate() {
             for &to in dependencies {
                 edges.push((from, to));
             }
@@ -128,11 +141,12 @@ impl Closure for DepClosure {
     }
 
     fn up(&self, s: &Set) -> Set {
+        let req = self.requires.read().unwrap();
         let mut out = s.clone();
         out.extend(self.forced.iter().copied());
         let mut stack: Vec<usize> = out.iter().copied().collect();
         while let Some(x) = stack.pop() {
-            for &r in &self.requires[x] {
+            for &r in &req[x] {
                 if out.insert(r) {
                     stack.push(r);
                 }
@@ -142,13 +156,14 @@ impl Closure for DepClosure {
     }
 
     fn down(&self, s: &Set) -> Set {
+        let req = self.requires.read().unwrap();
         let mut out = s.clone();
         loop {
             let broken: Vec<usize> = out
                 .iter()
                 .copied()
                 .filter(|x| {
-                    !self.forced.contains(x) && self.requires[*x].iter().any(|r| !out.contains(r))
+                    !self.forced.contains(x) && req[*x].iter().any(|r| !out.contains(r))
                 })
                 .collect();
             if broken.is_empty() {
@@ -164,9 +179,10 @@ impl Closure for DepClosure {
         if s.is_empty() {
             return Vec::new();
         }
+        let req = self.requires.read().unwrap();
         let required: Set = s
             .iter()
-            .flat_map(|&u| self.requires[u].iter().copied())
+            .flat_map(|&u| req[u].iter().copied())
             .filter(|r| s.contains(r))
             .collect();
         let mut roots: Set = s
@@ -179,7 +195,7 @@ impl Closure for DepClosure {
         let mut reachable = roots.clone();
         let mut stack: Vec<usize> = roots.iter().copied().collect();
         while let Some(x) = stack.pop() {
-            for &r in &self.requires[x] {
+            for &r in &req[x] {
                 if s.contains(&r) && reachable.insert(r) {
                     stack.push(r);
                 }

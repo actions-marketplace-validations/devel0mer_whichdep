@@ -268,6 +268,9 @@ impl<'a> Trials<'a> {
                 Status::Exited(0) => {}
                 Status::NotRunnable(e) => return self.fatal_err(e),
                 other => {
+                    if let Ok(log_text) = fs::read_to_string(log) {
+                        self.eco.learn_from_prepare_failure(config, &log_text);
+                    }
                     let why = match failure_hint(log) {
                         Some(h) => format!("environment setup failed: {h}"),
                         None => format!("environment setup failed ({})", other.describe()),

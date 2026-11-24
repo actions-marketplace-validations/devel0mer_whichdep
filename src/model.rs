@@ -154,4 +154,9 @@ pub trait Ecosystem {
     fn pin_hint(&self, _unit: usize) -> Option<String> {
         None
     }
+    /// Optionally learn new closure edges from an unresolved prepare failure log
+    /// (e.g. `pip check` reporting missing or incompatible dependencies).
+    fn learn_from_prepare_failure(&self, _applied: &Set, _log_text: &str) -> usize {
+        0
+    }
 }

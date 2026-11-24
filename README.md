@@ -14,6 +14,10 @@ Your CI was green yesterday. Today a `cargo update`, a Dependabot PR, or a fresh
 
 ![whichdep isolating a breaking npm dependency update in 7 trials](https://raw.githubusercontent.com/devel0mer/whichdep/main/assets/demo.gif)
 
+**Real-world upstream example — [Bevy #12044](https://github.com/bevyengine/bevy/issues/12044)** (590-crate `Cargo.lock`, 16 updated crates → `async-executor 1.8.0 → 1.9.0` deadlock isolated & verified in 8 trials / 18s):
+
+![whichdep isolating Bevy #12044 async-executor deadlock in 8 trials](assets/bevy-12044-demo.gif)
+
 ---
 
 ## Install

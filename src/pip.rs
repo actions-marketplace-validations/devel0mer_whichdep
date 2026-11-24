@@ -446,6 +446,81 @@ fi
             None
         }
     }
+
+    fn learn_from_prepare_failure(&self, applied: &Set, log_text: &str) -> usize {
+        let conflicts = parse_pip_check_conflicts(log_text);
+        if conflicts.is_empty() {
+            return 0;
+        }
+        let unit_by_name = |norm: &str| -> Option<usize> {
+            self.units.iter().enumerate().find_map(|(ui, u)| {
+                let name = u
+                    .bad
+                    .map(|bi| self.bad.reqs[bi].name.as_str())
+                    .or_else(|| u.good.map(|gi| self.good.reqs[gi].name.as_str()))?;
+                (normalize(name) == norm).then_some(ui)
+            })
+        };
+        let mut added = 0;
+        for (pkg_a, pkg_b) in conflicts {
+            let (Some(ua), Some(ub)) = (unit_by_name(&pkg_a), unit_by_name(&pkg_b)) else {
+                continue;
+            };
+            let a_in = applied.contains(&ua);
+            let b_in = applied.contains(&ub);
+            if a_in && !b_in {
+                if self.closure.add_edge(ua, ub) {
+                    added += 1;
+                }
+            } else if !a_in && b_in && self.closure.add_edge(ub, ua) {
+                added += 1;
+            }
+        }
+        added
+    }
+}
+
+/// Extract normalized `(requirer, required)` package pairs from `pip check`
+/// and `uv pip check` failure output.
+fn parse_pip_check_conflicts(log_text: &str) -> Vec<(String, String)> {
+    fn leading_pkg_name(s: &str) -> Option<String> {
+        let s = s.trim_start().trim_start_matches('`');
+        let end = s
+            .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
+            .unwrap_or(s.len());
+        if end == 0 {
+            None
+        } else {
+            Some(normalize(&s[..end]))
+        }
+    }
+
+    let mut pairs = Vec::new();
+    for raw in log_text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // Format 1: "<pkgA> <verA> requires <pkgB>, which is not installed."
+        if let Some((left, right)) = line.split_once(" requires ") {
+            let left = left.strip_prefix("The package ").unwrap_or(left);
+            if let (Some(a), Some(b)) = (leading_pkg_name(left), leading_pkg_name(right)) {
+                if a != b {
+                    pairs.push((a, b));
+                }
+            }
+            continue;
+        }
+        // Format 2: "<pkgA> <verA> has requirement <pkgB><spec>, but you have <pkgB> <verB>."
+        if let Some((left, right)) = line.split_once(" has requirement ") {
+            if let (Some(a), Some(b)) = (leading_pkg_name(left), leading_pkg_name(right)) {
+                if a != b {
+                    pairs.push((a, b));
+                }
+            }
+        }
+    }
+    pairs
 }
 
 #[cfg(test)]
@@ -591,5 +666,53 @@ delta==0.5.0
     fn unpinned_requirements_are_reported() {
         let p = PipPlan::new("r.txt", "foo>=1\n", "foo>=2\n").unwrap();
         assert!(!p.warnings().is_empty());
+    }
+
+    #[test]
+    fn learns_dynamic_closure_edges_from_pip_check_failures() {
+        // Plain pip freeze (no # via comments at all).
+        let good = "mcp==1.30.0\nidna==3.10\ngoogle-genai==1.2.0\nwebsockets==14.0\nsniffio==1.3.1\n";
+        let bad = "mcp==2.3.0\nidna==3.20\ngoogle-genai==1.15.0\nwebsockets==17.4\nopentelemetry-api==1.45.2\n";
+        let p = PipPlan::new("requirements.txt", good, bad).unwrap();
+        let idx = |name: &str| p.changes().iter().position(|c| c.name == name).unwrap();
+        let mcp = idx("mcp");
+        let idna = idx("idna");
+        let genai = idx("google-genai");
+        let ws = idx("websockets");
+        let otel = idx("opentelemetry-api");
+        let sniffio = idx("sniffio");
+
+        // Initially no # via edges exist.
+        assert_eq!(p.closure().up(&[mcp].into_iter().collect()), [mcp].into_iter().collect());
+
+        // Case 1 & 2: mcp (applied) requires otel (not applied) and idna>=3.18 (not applied).
+        let log1 = "\
+mcp 2.3.0 requires opentelemetry-api, which is not installed.
+mcp 2.3.0 has requirement idna>=3.18, but you have idna 3.10.
+";
+        assert_eq!(p.learn_from_prepare_failure(&[mcp].into_iter().collect(), log1), 2);
+        assert_eq!(
+            p.closure().up(&[mcp].into_iter().collect()),
+            [mcp, otel, idna].into_iter().collect()
+        );
+
+        // Case 3 & 4: reverse conflict — google-genai (good, not applied) conflicts with
+        // websockets 17.4 (bad, applied); and mcp 1.30 (good, not applied) requires sniffio (removed, applied).
+        let log2 = "\
+google-genai 1.2.0 has requirement websockets<15.0dev,>=13.0, but you have websockets 17.4.
+mcp 1.30.0 requires sniffio, which is not installed.
+";
+        assert_eq!(
+            p.learn_from_prepare_failure(&[ws, sniffio].into_iter().collect(), log2),
+            2
+        );
+        assert_eq!(
+            p.closure().up(&[ws].into_iter().collect()),
+            [ws, genai].into_iter().collect()
+        );
+        assert_eq!(
+            p.closure().up(&[sniffio].into_iter().collect()),
+            [sniffio, mcp, otel, idna].into_iter().collect()
+        );
     }
 }

@@ -83,11 +83,48 @@ tracked separately below.
     cache-key isolation and added a `-D warnings` hint when `BadPasses` sees
     Cargo compiler warnings.
 
-## Upstream E1 cases to reproduce next (full repos)
+## Upstream E1 reproductions (full repos)
 
-- [Bevy #12044](https://github.com/bevyengine/bevy/issues/12044): Bevy 0.12.1
-  startup hang after fresh Cargo resolution selected `async-executor` 1.9.0.
-- [Synapse AI v1.8.6 release notes](https://github.com/synapseorch-ai/synapse-ai/releases/tag/v1.8.6):
-  fresh installs broke after `mcp` 2.0.0 (`synapseorch-ai`, not Matrix's
-  `matrix-org/synapse`).
+### 4. Rust (`cargo` / `Cargo.lock`) — Bevy #12044 (`async-executor 1.8.0 → 1.9.0` deadlock)
+
+- **Upstream reference:** [Bevy #12044](https://github.com/bevyengine/bevy/issues/12044)
+  — Bevy `v0.12.1` startup/task-pool lockup after Cargo resolved yanked
+  `async-executor 1.9.0` (which re-introduced a `ThreadLocal` local-queue
+  optimization later reverted in `1.9.1`).
+- **Fixtures:** `bevy_12044/Cargo.good.lock`, `bevy_12044/Cargo.bad.lock`,
+  `bevy_12044/issue_12044.rs` (placed at `crates/bevy_tasks/tests/issue_12044.rs`).
+- **Environment:** macOS arm64, Rust stable, `whichdep 0.1.0`, full 590-crate
+  `bevyengine/bevy` `v0.12.1` workspace, oracle
+  `cargo test -p bevy_tasks --features multi-threaded --test issue_12044`.
+- **Diff size:** 16 updated crates across the 590-crate workspace.
+- **Observed results (`--no-resume`):**
+  - `adaptive`: **8 trials** (3 pass, 5 fail, **0 unresolved**), **36s** (cold→warm).
+  - `ddmin`: **8 trials** (3 pass, 5 fail, **0 unresolved**), **18s** (warm cache: ~850ms/pass, ~2.8s/fail including 2s timeout).
+  - Isolated cause: **`async-executor 1.8.0 → 1.9.0`** (exact match).
+  - Verdict: **`Verified`** — `cargo update async-executor@1.9.0 --precise 1.8.0`.
+
+### 5. Python (`pip` / `requirements.txt` with `# via`) — Synapse AI v1.8.6 (`mcp 1.30.0 → 2.3.0`)
+
+- **Upstream reference:** [Synapse AI v1.8.6 release notes](https://github.com/synapseorch-ai/synapse-ai/releases/tag/v1.8.6)
+  — `synapseorch-ai/synapse-ai` `v1.8.5` broke on fresh installs when `mcp`
+  bumped to `2.x` (`backend/tools/time.py` fails at import with
+  `AttributeError: 'Server' object has no attribute 'list_tools'`).
+- **Fixtures:** `synapse_v1_8_6/requirements.good.txt`,
+  `synapse_v1_8_6/requirements.bad.txt` (60 packages with `# via` edges).
+- **Environment:** macOS arm64, Python 3.15 + `pip`, `whichdep 0.1.0`,
+  `synapseorch-ai/synapse-ai` `v1.8.5`, oracle
+  `python -c "import sys; sys.path.insert(0, 'backend'); import tools.time"`.
+- **Diff size:** 31 changes (19 updated, 8 new, 4 removed).
+- **Observed results (`--no-resume`):**
+  - `adaptive`: **29 trials** (+12 reused; 17 pass, 7 fail, **5 unresolved** = 17.2%), **5m 25s**.
+  - `ddmin`: **29 trials** (+11 reused; 17 pass, 7 fail, **5 unresolved** = 17.2%), **5m 35s**.
+  - Isolated cause: **`mcp 1.30.0 → 2.3.0`** + required version companion
+    `idna 3.10 → 3.20` (`mcp 2.3.0 → httpx2 2.16.2` requires `idna>=3.18`) +
+    5 new companions (`httpcore2`, `httpx2`, `mcp-types`, `opentelemetry-api`,
+    `truststore`).
+  - Verdict: **`Not verified`** (honest: reverting `mcp` alone failed `google-genai 1.2.0` vs `websockets 17.4` constraint).
+  - **Key finding:** Without `# via` comments (`pip freeze`), the same 31-change diff stalled past 54 trials with >60% unresolved; `# via` edges cut unresolved to 17.2%.
+
+## Next E1 targets
+
 - `uv.lock` and `pnpm-lock.yaml` live upstream reproductions.

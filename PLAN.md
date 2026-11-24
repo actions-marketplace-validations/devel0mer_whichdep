@@ -39,8 +39,23 @@ The engine and both adapters are tested against synthetic data and tiny local re
 
 ## Observed Measurements (2026-11-24)
 
+### E1 Upstream Real-Repository Reproductions (Bevy #12044, Synapse AI v1.8.6)
+Live runs against real upstream repositories and registries (`whichdep 0.1.0`, `--no-resume`, comparing `--strategy adaptive` vs `--strategy ddmin`):
+
+| Ecosystem | Upstream case | Lockfile / Diff | Strategy | Trials | Unresolved | Wall time | Verdict |
+|---|---|---|---:|---:|---:|---:|---|
+| Rust (`cargo`) | `bevyengine/bevy` v0.12.1 ([Bevy #12044](https://github.com/bevyengine/bevy/issues/12044), `async-executor 1.8.0 → 1.9.0` deadlock) | 590 crates / 16 updated | `adaptive` | 8 | 0 (0%) | 36s (cold→warm) | Exact match · **Verified** |
+| Rust (`cargo`) | `bevyengine/bevy` v0.12.1 ([Bevy #12044](https://github.com/bevyengine/bevy/issues/12044), `async-executor 1.8.0 → 1.9.0` deadlock) | 590 crates / 16 updated | `ddmin` | 8 | 0 (0%) | 18s (warm) | Exact match · **Verified** |
+| Python (`pip`, `# via`) | `synapseorch-ai/synapse-ai` v1.8.5 ([v1.8.6](https://github.com/synapseorch-ai/synapse-ai/releases/tag/v1.8.6), `mcp 1.30.0 → 2.3.0`) | 60 pkgs / 31 changes (19 upd, 8 new, 4 rem) | `adaptive` | 29 (+12 reused) | 5 (17.2%) | 5m 25s | `mcp` + `idna` (`httpx2` requires `idna>=3.18`) · Not verified (honest) |
+| Python (`pip`, `# via`) | `synapseorch-ai/synapse-ai` v1.8.5 ([v1.8.6](https://github.com/synapseorch-ai/synapse-ai/releases/tag/v1.8.6), `mcp 1.30.0 → 2.3.0`) | 60 pkgs / 31 changes (19 upd, 8 new, 4 rem) | `ddmin` | 29 (+11 reused) | 5 (17.2%) | 5m 35s | `mcp` + `idna` (`httpx2` requires `idna>=3.18`) · Not verified (honest) |
+
+- **Key E1 takeaways:**
+  - **Bevy #12044:** 8 trials is well below the `2·log2(16) + 3 = 11` H2 target, with **0% unresolved** and **~850ms** warm pass / **~2.8s** warm fail (including the 2s deadlock timeout) inside a 590-crate workspace.
+  - **Synapse AI v1.8.6:** Running the same 31-change diff from plain `pip freeze` (without `# via` edges) stalled past 54 trials with >60% unresolved; adding `# via` edges dropped unresolved to **17.2%** (within the 25% target) and isolated `mcp` cleanly without a false cause.
+  - **Fixtures saved:** `tests/regression_corpus/bevy_12044/` and `tests/regression_corpus/synapse_v1_8_6/`.
+
 ### Live-Registry Synthetic Validations (pre-E1 — Python, Node, Rust)
-Minimal synthetic harnesses against real PyPI, npm, and crates.io packages/lockfiles (full upstream E1 repos such as Bevy #12044 and Synapse AI v1.8.6 remain next):
+Minimal synthetic harnesses against real PyPI, npm, and crates.io packages/lockfiles:
 
 | Ecosystem | Live-registry case | Changes | Trials | Unresolved | Wall time | Verdict |
 |---|---|---:|---:|---:|---:|---|
