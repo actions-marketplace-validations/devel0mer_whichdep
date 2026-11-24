@@ -95,7 +95,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-          registry-url: "https://registry.npmjs.org"
       - name: Prepare npm package files
         run: |
           cp README.md npm/README.md
@@ -103,4 +102,6 @@ jobs:
           chmod +x npm/bin/whichdep.js npm/bin/install.js
       - name: Publish to npm via Trusted Publishing
         working-directory: npm
-        run: npm publish --provenance --access public
+        run: |
+          npm --version
+          npm publish --provenance --access public
